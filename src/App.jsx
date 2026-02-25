@@ -1,162 +1,122 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 const SUPABASE_URL = "https://wtspmrqnatbnexinspzb.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind0c3BtcnFuYXRibmV4aW5zcHpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIwMzEzOTUsImV4cCI6MjA4NzYwNzM5NX0.OYC11RHMHiUTRoKzVJQxFkO656bXZDAaQbz6j6XTAZ0";
+const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind0c3BtcnFuYXRibmV4aW5zcHpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIwMzEzOTAsImV4cCI6MjA4NzYwNzM5MH0.LbwrJfSSSyVj3FDPawmc6O29jM0o8oLMIIXpMOuXwig";
 
-// ─── Brand tokens ───
-const T = {
-  bg: "#0B0B0F",
-  surface: "#141419",
-  surfaceHover: "#1a1a22",
-  border: "#2a2a35",
-  accent: "#00BFFF",
-  accentGlow: "rgba(0, 191, 255, 0.15)",
-  accentGlowStrong: "rgba(0, 191, 255, 0.3)",
-  text: "#E8E8EC",
-  textMuted: "#8888A0",
-  success: "#00E676",
-  successGlow: "rgba(0, 230, 118, 0.15)",
-  error: "#FF5252",
-  white: "#FFFFFF",
-  fontStack: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-};
-
-// ─── Signature Pad ───
-function SignaturePad({ onSignatureChange, clearTrigger }) {
-  const canvasRef = useRef(null);
+/* ── signature pad helpers ─────────────────────────────────────── */
+function useSignaturePad(canvasRef) {
   const isDrawing = useRef(false);
-  const lastPos = useRef({ x: 0, y: 0 });
-
-  const getCtx = () => canvasRef.current?.getContext("2d");
-
-  const resizeCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    const ctx = getCtx();
-    ctx.scale(dpr, dpr);
-    ctx.strokeStyle = T.accent;
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-  }, []);
-
-  useEffect(() => {
-    resizeCanvas();
-    window.addEventListener("resize", resizeCanvas);
-    return () => window.removeEventListener("resize", resizeCanvas);
-  }, [resizeCanvas]);
-
-  useEffect(() => {
-    resizeCanvas();
-    onSignatureChange(null);
-  }, [clearTrigger, resizeCanvas, onSignatureChange]);
+  const hasDrawn = useRef(false);
 
   const getPos = (e) => {
-    const canvas = canvasRef.current;
-    const rect = canvas.getBoundingClientRect();
+    const rect = canvasRef.current.getBoundingClientRect();
     const touch = e.touches ? e.touches[0] : e;
-    return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+    return {
+      x: touch.clientX - rect.left,
+      y: touch.clientY - rect.top,
+    };
   };
 
-  const startDraw = (e) => {
-    e.preventDefault();
-    isDrawing.current = true;
-    lastPos.current = getPos(e);
-  };
-
-  const draw = (e) => {
-    if (!isDrawing.current) return;
-    e.preventDefault();
-    const ctx = getCtx();
-    const pos = getPos(e);
-    ctx.beginPath();
-    ctx.moveTo(lastPos.current.x, lastPos.current.y);
-    ctx.lineTo(pos.x, pos.y);
-    ctx.stroke();
-    lastPos.current = pos;
-  };
-
-  const stopDraw = () => {
-    if (isDrawing.current) {
-      isDrawing.current = false;
-      onSignatureChange(canvasRef.current.toDataURL("image/png"));
-    }
-  };
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        width: "100%",
-        height: 160,
-        background: T.bg,
-        borderRadius: 10,
-        border: `1px solid ${T.border}`,
-        touchAction: "none",
-        cursor: "crosshair",
-        display: "block",
-      }}
-      onMouseDown={startDraw}
-      onMouseMove={draw}
-      onMouseUp={stopDraw}
-      onMouseLeave={stopDraw}
-      onTouchStart={startDraw}
-      onTouchMove={draw}
-      onTouchEnd={stopDraw}
-    />
+  const startDraw = useCallback(
+    (e) => {
+      e.preventDefault();
+      isDrawing.current = true;
+      hasDrawn.current = true;
+      const ctx = canvasRef.current.getContext("2d");
+      const { x, y } = getPos(e);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+    },
+    [canvasRef]
   );
+
+  const draw = useCallback(
+    (e) => {
+      if (!isDrawing.current) return;
+      e.preventDefault();
+      const ctx = canvasRef.current.getContext("2d");
+      const { x, y } = getPos(e);
+      ctx.lineTo(x, y);
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.stroke();
+    },
+    [canvasRef]
+  );
+
+  const endDraw = useCallback(() => {
+    isDrawing.current = false;
+  }, []);
+
+  const clearPad = useCallback(() => {
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    hasDrawn.current = false;
+  }, [canvasRef]);
+
+  const getDataURL = useCallback(() => {
+    return canvasRef.current.toDataURL("image/png");
+  }, [canvasRef]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.addEventListener("mousedown", startDraw);
+    canvas.addEventListener("mousemove", draw);
+    canvas.addEventListener("mouseup", endDraw);
+    canvas.addEventListener("mouseleave", endDraw);
+    canvas.addEventListener("touchstart", startDraw, { passive: false });
+    canvas.addEventListener("touchmove", draw, { passive: false });
+    canvas.addEventListener("touchend", endDraw);
+
+    return () => {
+      canvas.removeEventListener("mousedown", startDraw);
+      canvas.removeEventListener("mousemove", draw);
+      canvas.removeEventListener("mouseup", endDraw);
+      canvas.removeEventListener("mouseleave", endDraw);
+      canvas.removeEventListener("touchstart", startDraw);
+      canvas.removeEventListener("touchmove", draw);
+      canvas.removeEventListener("touchend", endDraw);
+    };
+  }, [canvasRef, startDraw, draw, endDraw]);
+
+  return { clearPad, getDataURL, hasDrawn };
 }
 
-// ─── Waiver Terms ───
-const WAIVER_TEXT = `REACT Premium Escape Rooms \u2014 Liability Waiver and Release
-
-By signing below, I acknowledge and agree to the following:
-
-1. ASSUMPTION OF RISK: I understand that participation in escape room activities involves physical and mental challenges that may include, but are not limited to, navigating dimly lit spaces, solving puzzles under time pressure, and interacting with mechanical props and electronic equipment. I voluntarily assume all risks associated with participation.
-
-2. RELEASE OF LIABILITY: I hereby release, waive, and discharge REACT Premium Escape Rooms, its owners, operators, employees, and agents (collectively, "REACT") from any and all liability, claims, demands, or causes of action that I may have or that may arise out of or relate to any loss, damage, or injury sustained while participating in escape room activities.
-
-3. MEDICAL CONDITIONS: I confirm that I have no medical conditions that would prevent safe participation, or that I have consulted with a medical professional and received clearance to participate.
-
-4. RULES AND CONDUCT: I agree to follow all posted rules, staff instructions, and safety guidelines. I understand that failure to comply may result in removal from the activity without refund.
-
-5. PHOTOGRAPHY AND MEDIA: I grant REACT permission to use any photographs, video recordings, or other media captured during my visit for promotional purposes, unless I notify staff in writing prior to my activity.
-
-6. PROPERTY: I understand that REACT is not responsible for lost, stolen, or damaged personal belongings.
-
-7. MINIMUM AGE: Participants under 18 must have this waiver signed by a parent or legal guardian.
-
-8. ACKNOWLEDGMENT: I have read this waiver in its entirety, understand its terms, and agree to be bound by them.`;
-
-// ─── Main App ───
+/* ── main component ─────────────────────────────────────────── */
 export default function App() {
-  const [fullName, setFullName] = useState("");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [agreed, setAgreed] = useState(false);
-  const [signatureData, setSignatureData] = useState(null);
-  const [clearSig, setClearSig] = useState(0);
-  const [showTerms, setShowTerms] = useState(false);
-  const [status, setStatus] = useState("idle");
+  const [status, setStatus] = useState("idle"); // idle | sending | success | error
   const [errorMsg, setErrorMsg] = useState("");
+  const canvasRef = useRef(null);
+  const { clearPad, getDataURL, hasDrawn } = useSignaturePad(canvasRef);
 
-  const canSubmit = fullName.trim() && email.trim() && agreed && signatureData;
-
-  const handleClear = () => {
-    setClearSig((c) => c + 1);
-    setSignatureData(null);
-  };
-
-  const handleSubmit = async () => {
-    if (!canSubmit) return;
-    setStatus("submitting");
+  const handleSubmit = async (e) => {
+    e.preventDefault();
     setErrorMsg("");
 
+    if (!name.trim() || !email.trim()) {
+      setErrorMsg("Please fill in your name and email.");
+      return;
+    }
+    if (!agreed) {
+      setErrorMsg("Please agree to the waiver terms.");
+      return;
+    }
+    if (!hasDrawn.current) {
+      setErrorMsg("Please sign in the signature box.");
+      return;
+    }
+
+    setStatus("sending");
+
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/waivers`, {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/Waivers`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -165,396 +125,252 @@ export default function App() {
           Prefer: "return=minimal",
         },
         body: JSON.stringify({
-          full_name: fullName.trim(),
-          email: email.trim().toLowerCase(),
+          "full name": name.trim(),
+          email: email.trim(),
           agreed: true,
-          signature_url: signatureData,
+          signature_url: getDataURL(),
         }),
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || `HTTP ${res.status}`);
+        const err = await res.json();
+        throw new Error(err.message || "Failed to submit waiver");
       }
 
       setStatus("success");
+      setName("");
+      setEmail("");
+      setAgreed(false);
+      clearPad();
     } catch (err) {
-      setErrorMsg(err.message || "Something went wrong. Please try again.");
       setStatus("error");
+      setErrorMsg(err.message);
     }
   };
 
-  const handleReset = () => {
-    setFullName("");
-    setEmail("");
-    setAgreed(false);
-    setSignatureData(null);
-    setClearSig((c) => c + 1);
+  const resetForm = () => {
     setStatus("idle");
     setErrorMsg("");
   };
 
-  // ─── Success Screen ───
+  /* ── success screen ──────────────────────────────────────── */
   if (status === "success") {
     return (
-      <div style={styles.wrapper}>
-        <div style={styles.container}>
-          <div style={styles.successCard}>
-            <div style={{ fontSize: 56, marginBottom: 16 }}>{"\u2713"}</div>
-            <h1 style={{ ...styles.h1, color: T.success, marginBottom: 8 }}>
-              Waiver Signed
-            </h1>
-            <p style={{ ...styles.bodyText, color: T.textMuted, marginBottom: 32, maxWidth: 320, margin: "0 auto 32px" }}>
-              You're all set, {fullName.split(" ")[0]}. Your team's adventure awaits.
-            </p>
-            <button style={styles.secondaryBtn} onClick={handleReset}>
+      <div style={styles.container}>
+        <div style={styles.card}>
+          <h1 style={styles.title}>REACT Premium Escape Rooms</h1>
+          <div style={styles.successBox}>
+            <h2 style={{ color: "#22c55e", marginBottom: 8 }}>Waiver Signed!</h2>
+            <p>Thank you. Your waiver has been recorded. You're all set for your adventure.</p>
+            <button onClick={resetForm} style={styles.button}>
               Sign Another Waiver
             </button>
           </div>
-          <Footer />
         </div>
       </div>
     );
   }
 
-  // ─── Form ───
+  /* ── form ──────────────────────────────────────────────── */
   return (
-    <div style={styles.wrapper}>
-      <div style={styles.container}>
-        {/* Header */}
-        <div style={styles.header}>
-          <div style={styles.logoMark}>R</div>
-          <div>
-            <h1 style={styles.logoText}>REACT</h1>
-            <p style={styles.logoSub}>PREMIUM ESCAPE ROOMS</p>
-          </div>
+    <div style={styles.container}>
+      <div style={styles.card}>
+        <h1 style={styles.title}>REACT Premium Escape Rooms</h1>
+        <h2 style={styles.subtitle}>Participant Waiver</h2>
+
+        <div style={styles.waiverText}>
+          <p>
+            By signing this waiver, I acknowledge that participation in escape room
+            activities at REACT Premium Escape Rooms involves physical and mental
+            challenges. I agree to follow all safety instructions provided by staff.
+            I understand that I participate at my own risk and release REACT Premium
+            Escape Rooms, its owners, employees, and agents from any liability for
+            injury or loss that may occur during my visit.
+          </p>
         </div>
 
-        <div style={styles.card}>
-          <h2 style={styles.h2}>Participant Waiver</h2>
-          <p style={styles.bodyText}>
-            All participants must sign before their adventure. One waiver per person.
-          </p>
-
-          {/* Name */}
-          <label style={styles.label}>Full Name</label>
-          <input
-            type="text"
-            placeholder="First and last name"
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            style={styles.input}
-          />
-
-          {/* Email */}
-          <label style={styles.label}>Email</label>
-          <input
-            type="email"
-            placeholder="you@email.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={styles.input}
-          />
-
-          {/* Terms */}
-          <label style={styles.label}>Liability Waiver</label>
-          <button
-            style={styles.termsToggle}
-            onClick={() => setShowTerms(!showTerms)}
-          >
-            <span>{showTerms ? "Hide" : "Read"} full waiver terms</span>
-            <span style={{ transform: showTerms ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>{"\u25BE"}</span>
-          </button>
-          {showTerms && (
-            <div style={styles.termsBox}>
-              {WAIVER_TEXT}
-            </div>
-          )}
-
-          {/* Agreement Checkbox */}
-          <label style={styles.checkboxRow} onClick={() => setAgreed(!agreed)}>
-            <div
-              style={{
-                ...styles.checkbox,
-                background: agreed ? T.accent : "transparent",
-                borderColor: agreed ? T.accent : T.border,
-              }}
-            >
-              {agreed && <span style={{ color: T.bg, fontSize: 13, fontWeight: 700 }}>{"\u2713"}</span>}
-            </div>
-            <span style={{ color: T.text, fontSize: 14, lineHeight: 1.4 }}>
-              I have read and agree to the liability waiver terms above
-            </span>
+        <form onSubmit={handleSubmit} style={styles.form}>
+          <label style={styles.label}>
+            Full Name
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={styles.input}
+              placeholder="Your full name"
+            />
           </label>
 
-          {/* Signature */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <label style={{ ...styles.label, marginBottom: 0 }}>Signature</label>
-            {signatureData && (
-              <button style={styles.clearSigBtn} onClick={handleClear}>
-                Clear
-              </button>
-            )}
+          <label style={styles.label}>
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              style={styles.input}
+              placeholder="your@email.com"
+            />
+          </label>
+
+          <label style={styles.checkboxLabel}>
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              style={{ marginRight: 8 }}
+            />
+            I have read and agree to the waiver terms above
+          </label>
+
+          <div style={styles.sigSection}>
+            <p style={styles.sigLabel}>Signature</p>
+            <canvas
+              ref={canvasRef}
+              width={320}
+              height={150}
+              style={styles.canvas}
+            />
+            <button type="button" onClick={clearPad} style={styles.clearBtn}>
+              Clear Signature
+            </button>
           </div>
-          <p style={{ ...styles.bodyText, fontSize: 13, marginBottom: 10, color: T.textMuted }}>
-            Draw your signature below with your finger or mouse
-          </p>
-          <SignaturePad
-            onSignatureChange={useCallback((data) => setSignatureData(data), [])}
-            clearTrigger={clearSig}
-          />
 
-          {/* Error */}
-          {status === "error" && (
-            <div style={styles.errorBox}>
-              {errorMsg}
-            </div>
-          )}
+          {errorMsg && <p style={styles.error}>{errorMsg}</p>}
 
-          {/* Submit */}
           <button
+            type="submit"
+            disabled={status === "sending"}
             style={{
-              ...styles.primaryBtn,
-              opacity: canSubmit && status !== "submitting" ? 1 : 0.4,
-              cursor: canSubmit && status !== "submitting" ? "pointer" : "not-allowed",
+              ...styles.button,
+              opacity: status === "sending" ? 0.6 : 1,
             }}
-            onClick={handleSubmit}
-            disabled={!canSubmit || status === "submitting"}
           >
-            {status === "submitting" ? "Submitting..." : "Sign Waiver"}
+            {status === "sending" ? "Submitting..." : "Sign Waiver"}
           </button>
-        </div>
-
-        <Footer />
+        </form>
       </div>
     </div>
   );
 }
 
-function Footer() {
-  return (
-    <div style={styles.footer}>
-      <p style={{ color: T.textMuted, fontSize: 12, margin: 0 }}>
-        REACT Premium Escape Rooms &middot; Windsor Locks, CT
-      </p>
-      <p style={{ color: T.textMuted, fontSize: 12, margin: "4px 0 0" }}>
-        860-370-5415 &middot; reactescaperooms.com
-      </p>
-    </div>
-  );
-}
-
-// ─── Styles ───
+/* ── styles ──────────────────────────────────────────────── */
 const styles = {
-  wrapper: {
-    minHeight: "100vh",
-    background: T.bg,
-    fontFamily: T.fontStack,
-    display: "flex",
-    justifyContent: "center",
-    padding: "24px 16px",
-    boxSizing: "border-box",
-  },
   container: {
-    width: "100%",
-    maxWidth: 480,
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    gap: 14,
-    marginBottom: 28,
-    paddingLeft: 4,
-  },
-  logoMark: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    background: `linear-gradient(135deg, ${T.accent}, #0080B0)`,
+    minHeight: "100vh",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontSize: 22,
-    fontWeight: 800,
-    color: T.white,
-    letterSpacing: -1,
-    flexShrink: 0,
-  },
-  logoText: {
-    fontSize: 20,
-    fontWeight: 800,
-    color: T.white,
-    letterSpacing: 3,
-    margin: 0,
-    lineHeight: 1.1,
-  },
-  logoSub: {
-    fontSize: 9,
-    fontWeight: 600,
-    color: T.accent,
-    letterSpacing: 2.5,
-    margin: 0,
-    lineHeight: 1.4,
+    background: "#111",
+    padding: 16,
+    fontFamily: "'Segoe UI', system-ui, sans-serif",
   },
   card: {
-    background: T.surface,
-    borderRadius: 16,
-    border: `1px solid ${T.border}`,
-    padding: "28px 24px 32px",
+    background: "#1a1a1a",
+    borderRadius: 12,
+    padding: 32,
+    maxWidth: 420,
+    width: "100%",
+    color: "#e5e5e5",
   },
-  h1: {
-    fontSize: 28,
+  title: {
+    color: "#ef4444",
+    fontSize: 22,
     fontWeight: 700,
-    color: T.white,
-    margin: "0 0 8px",
     textAlign: "center",
-    fontFamily: T.fontStack,
+    margin: 0,
   },
-  h2: {
-    fontSize: 20,
-    fontWeight: 700,
-    color: T.white,
-    margin: "0 0 6px",
-    fontFamily: T.fontStack,
-  },
-  bodyText: {
+  subtitle: {
+    color: "#999",
     fontSize: 14,
-    color: T.textMuted,
-    margin: "0 0 24px",
+    fontWeight: 400,
+    textAlign: "center",
+    marginTop: 4,
+    marginBottom: 20,
+  },
+  waiverText: {
+    background: "#222",
+    borderRadius: 8,
+    padding: 16,
+    fontSize: 13,
     lineHeight: 1.5,
-    fontFamily: T.fontStack,
+    color: "#aaa",
+    marginBottom: 20,
+    maxHeight: 160,
+    overflowY: "auto",
+  },
+  form: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 16,
   },
   label: {
-    display: "block",
-    fontSize: 13,
-    fontWeight: 600,
-    color: T.text,
-    marginBottom: 6,
-    fontFamily: T.fontStack,
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    fontSize: 14,
+    fontWeight: 500,
   },
   input: {
-    width: "100%",
-    padding: "12px 14px",
-    fontSize: 15,
-    fontFamily: T.fontStack,
-    background: T.bg,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    color: T.text,
-    outline: "none",
-    marginBottom: 20,
-    boxSizing: "border-box",
-    transition: "border-color 0.15s",
-  },
-  termsToggle: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    width: "100%",
-    padding: "10px 14px",
-    background: T.bg,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    color: T.accent,
-    fontSize: 13,
-    fontWeight: 500,
-    fontFamily: T.fontStack,
-    cursor: "pointer",
-    marginBottom: 12,
-    boxSizing: "border-box",
-  },
-  termsBox: {
-    background: T.bg,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    padding: 16,
-    fontSize: 12,
-    lineHeight: 1.7,
-    color: T.textMuted,
-    maxHeight: 240,
-    overflowY: "auto",
-    marginBottom: 12,
-    whiteSpace: "pre-wrap",
-    fontFamily: T.fontStack,
-  },
-  checkboxRow: {
-    display: "flex",
-    alignItems: "flex-start",
-    gap: 12,
-    cursor: "pointer",
-    marginBottom: 24,
-    userSelect: "none",
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
+    padding: "10px 12px",
     borderRadius: 6,
-    border: "2px solid",
+    border: "1px solid #333",
+    background: "#222",
+    color: "#fff",
+    fontSize: 15,
+    outline: "none",
+  },
+  checkboxLabel: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    marginTop: 1,
-    transition: "all 0.15s",
-  },
-  clearSigBtn: {
-    background: "transparent",
-    border: "none",
-    color: T.accent,
     fontSize: 13,
-    fontWeight: 500,
+    color: "#ccc",
     cursor: "pointer",
-    padding: "4px 8px",
-    fontFamily: T.fontStack,
   },
-  primaryBtn: {
-    width: "100%",
-    padding: "14px 0",
-    fontSize: 16,
-    fontWeight: 700,
-    fontFamily: T.fontStack,
-    background: `linear-gradient(135deg, ${T.accent}, #0080B0)`,
-    color: T.white,
-    border: "none",
-    borderRadius: 12,
-    cursor: "pointer",
-    marginTop: 24,
-    letterSpacing: 0.5,
-    transition: "opacity 0.15s",
+  sigSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
   },
-  secondaryBtn: {
-    padding: "12px 28px",
+  sigLabel: {
     fontSize: 14,
-    fontWeight: 600,
-    fontFamily: T.fontStack,
-    background: "transparent",
-    color: T.accent,
-    border: `1px solid ${T.accent}`,
-    borderRadius: 10,
+    fontWeight: 500,
+    margin: 0,
+  },
+  canvas: {
+    background: "#fff",
+    borderRadius: 6,
+    cursor: "crosshair",
+    touchAction: "none",
+    maxWidth: "100%",
+  },
+  clearBtn: {
+    alignSelf: "flex-start",
+    background: "none",
+    border: "none",
+    color: "#888",
+    fontSize: 12,
     cursor: "pointer",
-    transition: "background 0.15s",
+    padding: 0,
+    textDecoration: "underline",
   },
-  errorBox: {
-    background: "rgba(255, 82, 82, 0.1)",
-    border: `1px solid ${T.error}`,
-    borderRadius: 10,
-    padding: "10px 14px",
+  button: {
+    background: "#ef4444",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    padding: "12px 0",
+    fontSize: 16,
+    fontWeight: 600,
+    cursor: "pointer",
+    marginTop: 8,
+  },
+  successBox: {
+    textAlign: "center",
+    padding: "40px 20px",
+  },
+  error: {
+    color: "#ef4444",
     fontSize: 13,
-    color: T.error,
-    marginTop: 16,
-    fontFamily: T.fontStack,
-  },
-  successCard: {
-    background: T.surface,
-    borderRadius: 16,
-    border: `1px solid ${T.border}`,
-    padding: "60px 24px",
-    textAlign: "center",
-    marginTop: 60,
-  },
-  footer: {
-    textAlign: "center",
-    padding: "24px 0 8px",
-    fontFamily: T.fontStack,
+    margin: 0,
   },
 };
