@@ -125,7 +125,7 @@ export default function App() {
           Prefer: "return=minimal",
         },
         body: JSON.stringify({
-          "full name": name.trim(),
+          full_name: name.trim(),
           email: email.trim(),
           agreed: true,
           signature_url: getDataURL(),
