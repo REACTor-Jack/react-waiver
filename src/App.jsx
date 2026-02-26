@@ -276,4 +276,195 @@ export default function App() {
           <button type="submit" disabled={loading} style={{
             ...styles.button,
             opacity: loading ? 0.6 : 1,
-            c
+            cursor: loading ? 'not-allowed' : 'pointer',
+          }}>
+            {loading ? 'Submitting...' : 'Submit Waiver'}
+          </button>
+        </form>
+
+        <p style={styles.footer}>
+          REACT Premium Escape Rooms · 1 Corporate Dr, Suite 102, Windsor Locks, CT 06096
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// --- Styles ---
+const styles = {
+  page: {
+    minHeight: '100vh',
+    background: '#0a0a0a',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    padding: '40px 16px',
+    fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
+  },
+  card: {
+    width: '100%',
+    maxWidth: '520px',
+    background: '#111111',
+    border: '1px solid #1a3a5c',
+    borderRadius: '12px',
+    padding: '36px 28px',
+    boxShadow: '0 0 40px rgba(0, 100, 200, 0.08)',
+  },
+  logo: {
+    display: 'block',
+    margin: '0 auto 24px',
+    maxWidth: '220px',
+    height: 'auto',
+  },
+  title: {
+    color: '#ffffff',
+    fontSize: '22px',
+    fontWeight: '700',
+    textAlign: 'center',
+    margin: '0 0 6px',
+    letterSpacing: '0.5px',
+  },
+  subtitle: {
+    color: '#7a8a9a',
+    fontSize: '14px',
+    textAlign: 'center',
+    margin: '0 0 28px',
+  },
+  form: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  label: {
+    color: '#c0d0e0',
+    fontSize: '13px',
+    fontWeight: '600',
+    marginBottom: '6px',
+    letterSpacing: '0.3px',
+    textTransform: 'uppercase',
+  },
+  input: {
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    borderRadius: '8px',
+    padding: '12px 14px',
+    color: '#e0e8f0',
+    fontSize: '15px',
+    marginBottom: '18px',
+    outline: 'none',
+    transition: 'border-color 0.2s',
+  },
+  checkboxRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '10px',
+    marginBottom: '18px',
+  },
+  checkbox: {
+    marginTop: '3px',
+    accentColor: '#00bfff',
+    width: '18px',
+    height: '18px',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  checkboxLabel: {
+    color: '#b0c0d0',
+    fontSize: '14px',
+    lineHeight: '1.4',
+    cursor: 'pointer',
+  },
+  waiverBox: {
+    background: '#0a1520',
+    border: '1px solid #1a2a3a',
+    borderRadius: '8px',
+    padding: '16px',
+    marginBottom: '18px',
+    maxHeight: '160px',
+    overflowY: 'auto',
+  },
+  waiverText: {
+    color: '#8090a0',
+    fontSize: '13px',
+    lineHeight: '1.6',
+    margin: 0,
+  },
+  canvas: {
+    width: '100%',
+    height: '120px',
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    borderRadius: '8px',
+    cursor: 'crosshair',
+    touchAction: 'none',
+    marginBottom: '8px',
+  },
+  clearBtn: {
+    alignSelf: 'flex-end',
+    background: 'transparent',
+    border: 'none',
+    color: '#4a6a8a',
+    fontSize: '12px',
+    cursor: 'pointer',
+    padding: '4px 0',
+    marginBottom: '20px',
+    textDecoration: 'underline',
+  },
+  error: {
+    color: '#ff4466',
+    fontSize: '13px',
+    textAlign: 'center',
+    marginBottom: '14px',
+  },
+  button: {
+    background: 'linear-gradient(135deg, #0066cc, #00bfff)',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '8px',
+    padding: '14px',
+    fontSize: '16px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    letterSpacing: '0.5px',
+    transition: 'opacity 0.2s',
+  },
+  successIcon: {
+    width: '60px',
+    height: '60px',
+    borderRadius: '50%',
+    background: 'linear-gradient(135deg, #0066cc, #00bfff)',
+    color: '#fff',
+    fontSize: '30px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: '0 auto 16px',
+    fontWeight: '700',
+  },
+  successTitle: {
+    color: '#ffffff',
+    fontSize: '22px',
+    fontWeight: '700',
+    textAlign: 'center',
+    margin: '0 0 10px',
+  },
+  successText: {
+    color: '#b0c0d0',
+    fontSize: '15px',
+    textAlign: 'center',
+    margin: '0 0 6px',
+    lineHeight: '1.5',
+  },
+  successSubtext: {
+    color: '#5a7a9a',
+    fontSize: '13px',
+    textAlign: 'center',
+    margin: '0 0 24px',
+  },
+  footer: {
+    color: '#3a4a5a',
+    fontSize: '11px',
+    textAlign: 'center',
+    marginTop: '28px',
+    lineHeight: '1.4',
+  },
+};
