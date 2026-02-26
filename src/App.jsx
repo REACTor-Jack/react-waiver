@@ -1,376 +1,470 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef } from 'react';
+import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = "https://wtspmrqnatbnexinspzb.supabase.co";
-const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind0c3BtcnFuYXRibmV4aW5zcHpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIwMzEzOTUsImV4cCI6MjA4NzYwNzM5NX0.OYC11RHMHiUTRoKzVJQxFkO656bXZDAaQbz6j6XTAZ0";
+const supabase = createClient(
+  'https://wtspmrqnatbnexinspzb.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind0c3BtcnFuYXRibmV4aW5zcHpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA1MTMxMjgsImV4cCI6MjA1NjA4OTEyOH0.S9jY1MFbOJEqSJVMqsOvG7fMFKPDGSoJV2BEP3pwFgY'
+);
 
-/* ── signature pad helpers ─────────────────────────────────────── */
-function useSignaturePad(canvasRef) {
+const LOGO_URL = 'https://static.wixstatic.com/media/bbef2a_e5182ebf7aa047b99c23c4c98fec29db~mv2.png/v1/fill/w_276,h_110,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/HD%2520Logo-Transparent%2520BG-01_edited.png';
+
+export default function App() {
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [isMinor, setIsMinor] = useState(false);
+  const [minorName, setMinorName] = useState('');
+  const [agreed, setAgreed] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const canvasRef = useRef(null);
   const isDrawing = useRef(false);
-  const hasDrawn = useRef(false);
 
+  // --- Signature pad logic ---
   const getPos = (e) => {
-    const rect = canvasRef.current.getBoundingClientRect();
-    const touch = e.touches ? e.touches[0] : e;
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    if (e.touches) {
+      return {
+        x: (e.touches[0].clientX - rect.left) * scaleX,
+        y: (e.touches[0].clientY - rect.top) * scaleY,
+      };
+    }
     return {
-      x: touch.clientX - rect.left,
-      y: touch.clientY - rect.top,
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
     };
   };
 
-  const startDraw = useCallback(
-    (e) => {
-      e.preventDefault();
-      isDrawing.current = true;
-      hasDrawn.current = true;
-      const ctx = canvasRef.current.getContext("2d");
-      const { x, y } = getPos(e);
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-    },
-    [canvasRef]
-  );
+  const startDraw = (e) => {
+    e.preventDefault();
+    isDrawing.current = true;
+    const ctx = canvasRef.current.getContext('2d');
+    const pos = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(pos.x, pos.y);
+  };
 
-  const draw = useCallback(
-    (e) => {
-      if (!isDrawing.current) return;
-      e.preventDefault();
-      const ctx = canvasRef.current.getContext("2d");
-      const { x, y } = getPos(e);
-      ctx.lineTo(x, y);
-      ctx.strokeStyle = "#000";
-      ctx.lineWidth = 2;
-      ctx.lineCap = "round";
-      ctx.stroke();
-    },
-    [canvasRef]
-  );
+  const draw = (e) => {
+    e.preventDefault();
+    if (!isDrawing.current) return;
+    const ctx = canvasRef.current.getContext('2d');
+    const pos = getPos(e);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.strokeStyle = '#00bfff';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  };
 
-  const endDraw = useCallback(() => {
+  const endDraw = (e) => {
+    e.preventDefault();
     isDrawing.current = false;
-  }, []);
+  };
 
-  const clearPad = useCallback(() => {
-    const ctx = canvasRef.current.getContext("2d");
-    ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-    hasDrawn.current = false;
-  }, [canvasRef]);
-
-  const getDataURL = useCallback(() => {
-    return canvasRef.current.toDataURL("image/png");
-  }, [canvasRef]);
-
-  useEffect(() => {
+  const clearSignature = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  };
 
-    canvas.addEventListener("mousedown", startDraw);
-    canvas.addEventListener("mousemove", draw);
-    canvas.addEventListener("mouseup", endDraw);
-    canvas.addEventListener("mouseleave", endDraw);
-    canvas.addEventListener("touchstart", startDraw, { passive: false });
-    canvas.addEventListener("touchmove", draw, { passive: false });
-    canvas.addEventListener("touchend", endDraw);
+  const isCanvasBlank = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    return !data.some((channel, i) => i % 4 !== 3 ? false : channel !== 0);
+  };
 
-    return () => {
-      canvas.removeEventListener("mousedown", startDraw);
-      canvas.removeEventListener("mousemove", draw);
-      canvas.removeEventListener("mouseup", endDraw);
-      canvas.removeEventListener("mouseleave", endDraw);
-      canvas.removeEventListener("touchstart", startDraw);
-      canvas.removeEventListener("touchmove", draw);
-      canvas.removeEventListener("touchend", endDraw);
-    };
-  }, [canvasRef, startDraw, draw, endDraw]);
-
-  return { clearPad, getDataURL, hasDrawn };
-}
-
-/* ── main component ─────────────────────────────────────────── */
-export default function App() {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [agreed, setAgreed] = useState(false);
-  const [status, setStatus] = useState("idle"); // idle | sending | success | error
-  const [errorMsg, setErrorMsg] = useState("");
-  const canvasRef = useRef(null);
-  const { clearPad, getDataURL, hasDrawn } = useSignaturePad(canvasRef);
-
+  // --- Form submission ---
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setErrorMsg("");
+    setError('');
 
-    if (!name.trim() || !email.trim()) {
-      setErrorMsg("Please fill in your name and email.");
+    if (!fullName.trim() || !email.trim()) {
+      setError('Please fill in your name and email.');
+      return;
+    }
+    if (isMinor && !minorName.trim()) {
+      setError('Please enter the minor\'s name.');
       return;
     }
     if (!agreed) {
-      setErrorMsg("Please agree to the waiver terms.");
+      setError('You must agree to the waiver terms.');
       return;
     }
-    if (!hasDrawn.current) {
-      setErrorMsg("Please sign in the signature box.");
+    if (isCanvasBlank()) {
+      setError('Please provide your signature.');
       return;
     }
 
-    setStatus("sending");
+    setLoading(true);
 
     try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/Waivers`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          Prefer: "return=minimal",
-        },
-        body: JSON.stringify({
-          full_name: name.trim(),
+      const signatureDataUrl = canvasRef.current.toDataURL('image/png');
+
+      const { error: dbError } = await supabase.from('Waivers').insert([
+        {
+          full_name: fullName.trim(),
           email: email.trim(),
           agreed: true,
-          signature_url: getDataURL(),
-        }),
-      });
+          signature_url: signatureDataUrl,
+          is_minor: isMinor,
+          minor_name: isMinor ? minorName.trim() : null,
+        },
+      ]);
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.message || "Failed to submit waiver");
-      }
-
-      setStatus("success");
-      setName("");
-      setEmail("");
-      setAgreed(false);
-      clearPad();
+      if (dbError) throw dbError;
+      setSubmitted(true);
     } catch (err) {
-      setStatus("error");
-      setErrorMsg(err.message);
+      setError('Something went wrong. Please try again.');
+      console.error(err);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const resetForm = () => {
-    setStatus("idle");
-    setErrorMsg("");
-  };
-
-  /* ── success screen ──────────────────────────────────────── */
-  if (status === "success") {
+  // --- Success screen ---
+  if (submitted) {
     return (
-      <div style={styles.container}>
+      <div style={styles.page}>
         <div style={styles.card}>
-          <h1 style={styles.title}>REACT Premium Escape Rooms</h1>
-          <div style={styles.successBox}>
-            <h2 style={{ color: "#22c55e", marginBottom: 8 }}>Waiver Signed!</h2>
-            <p>Thank you. Your waiver has been recorded. You're all set for your adventure.</p>
-            <button onClick={resetForm} style={styles.button}>
-              Sign Another Waiver
-            </button>
-          </div>
+          <img src={LOGO_URL} alt="REACT Premium Escape Rooms" style={styles.logo} />
+          <div style={styles.successIcon}>✓</div>
+          <h2 style={styles.successTitle}>Waiver Signed!</h2>
+          <p style={styles.successText}>
+            Thank you, {fullName}. Your waiver has been submitted.
+            {isMinor && <><br />Minor: {minorName}</>}
+          </p>
+          <p style={styles.successSubtext}>You're all set for your adventure.</p>
+          <button
+            onClick={() => {
+              setSubmitted(false);
+              setFullName('');
+              setEmail('');
+              setIsMinor(false);
+              setMinorName('');
+              setAgreed(false);
+              clearSignature();
+            }}
+            style={styles.button}
+          >
+            Sign Another Waiver
+          </button>
         </div>
       </div>
     );
   }
 
-  /* ── form ──────────────────────────────────────────────── */
+  // --- Waiver form ---
   return (
-    <div style={styles.container}>
+    <div style={styles.page}>
       <div style={styles.card}>
-        <h1 style={styles.title}>REACT Premium Escape Rooms</h1>
-        <h2 style={styles.subtitle}>Participant Waiver</h2>
+        <img src={LOGO_URL} alt="REACT Premium Escape Rooms" style={styles.logo} />
 
-        <div style={styles.waiverText}>
-          <p>
-            By signing this waiver, I acknowledge that participation in escape room
-            activities at REACT Premium Escape Rooms involves physical and mental
-            challenges. I agree to follow all safety instructions provided by staff.
-            I understand that I participate at my own risk and release REACT Premium
-            Escape Rooms, its owners, employees, and agents from any liability for
-            injury or loss that may occur during my visit.
-          </p>
-        </div>
+        <h1 style={styles.title}>Participant Waiver</h1>
+        <p style={styles.subtitle}>
+          Please complete this waiver before your adventure.
+        </p>
 
         <form onSubmit={handleSubmit} style={styles.form}>
-          <label style={styles.label}>
-            Full Name
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={styles.input}
-              placeholder="Your full name"
-            />
-          </label>
+          {/* Full Name */}
+          <label style={styles.label}>Full Name</label>
+          <input
+            type="text"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            placeholder="Enter your full name"
+            style={styles.input}
+          />
 
-          <label style={styles.label}>
-            Email
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={styles.input}
-              placeholder="your@email.com"
-            />
-          </label>
+          {/* Email */}
+          <label style={styles.label}>Email Address</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Enter your email"
+            style={styles.input}
+          />
 
-          <label style={styles.checkboxLabel}>
+          {/* Minor checkbox */}
+          <div style={styles.checkboxRow}>
             <input
               type="checkbox"
-              checked={agreed}
-              onChange={(e) => setAgreed(e.target.checked)}
-              style={{ marginRight: 8 }}
+              id="minor-check"
+              checked={isMinor}
+              onChange={(e) => {
+                setIsMinor(e.target.checked);
+                if (!e.target.checked) setMinorName('');
+              }}
+              style={styles.checkbox}
             />
-            I have read and agree to the waiver terms above
-          </label>
-
-          <div style={styles.sigSection}>
-            <p style={styles.sigLabel}>Signature</p>
-            <canvas
-              ref={canvasRef}
-              width={320}
-              height={150}
-              style={styles.canvas}
-            />
-            <button type="button" onClick={clearPad} style={styles.clearBtn}>
-              Clear Signature
-            </button>
+            <label htmlFor="minor-check" style={styles.checkboxLabel}>
+              I am signing on behalf of a minor (under 18)
+            </label>
           </div>
 
-          {errorMsg && <p style={styles.error}>{errorMsg}</p>}
+          {/* Minor name — conditional */}
+          {isMinor && (
+            <>
+              <label style={styles.label}>Minor's Full Name</label>
+              <input
+                type="text"
+                value={minorName}
+                onChange={(e) => setMinorName(e.target.value)}
+                placeholder="Enter the minor's full name"
+                style={styles.input}
+              />
+            </>
+          )}
 
-          <button
-            type="submit"
-            disabled={status === "sending"}
-            style={{
-              ...styles.button,
-              opacity: status === "sending" ? 0.6 : 1,
-            }}
-          >
-            {status === "sending" ? "Submitting..." : "Sign Waiver"}
+          {/* Waiver text */}
+          <div style={styles.waiverBox}>
+            <p style={styles.waiverText}>
+              I acknowledge that participation in escape room activities at REACT Premium
+              Escape Rooms involves certain risks. I voluntarily assume all risks associated
+              with participation. I agree to follow all safety instructions and guidelines
+              provided by REACT staff. I release REACT Premium Escape Rooms, its owners,
+              employees, and agents from any and all liability for injuries or damages that
+              may occur during participation.
+              {isMinor && (
+                <> As the parent or legal guardian of the minor named above, I grant
+                permission for their participation and accept responsibility on their behalf.</>
+              )}
+            </p>
+          </div>
+
+          {/* Agreement checkbox */}
+          <div style={styles.checkboxRow}>
+            <input
+              type="checkbox"
+              id="agree-check"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+              style={styles.checkbox}
+            />
+            <label htmlFor="agree-check" style={styles.checkboxLabel}>
+              I have read and agree to the waiver terms above
+            </label>
+          </div>
+
+          {/* Signature */}
+          <label style={styles.label}>Signature</label>
+          <canvas
+            ref={canvasRef}
+            width={600}
+            height={200}
+            onMouseDown={startDraw}
+            onMouseMove={draw}
+            onMouseUp={endDraw}
+            onMouseLeave={endDraw}
+            onTouchStart={startDraw}
+            onTouchMove={draw}
+            onTouchEnd={endDraw}
+            style={styles.canvas}
+          />
+          <button type="button" onClick={clearSignature} style={styles.clearBtn}>
+            Clear Signature
+          </button>
+
+          {/* Error */}
+          {error && <p style={styles.error}>{error}</p>}
+
+          {/* Submit */}
+          <button type="submit" disabled={loading} style={{
+            ...styles.button,
+            opacity: loading ? 0.6 : 1,
+            cursor: loading ? 'not-allowed' : 'pointer',
+          }}>
+            {loading ? 'Submitting...' : 'Submit Waiver'}
           </button>
         </form>
+
+        <p style={styles.footer}>
+          REACT Premium Escape Rooms · 1 Corporate Dr, Suite 102, Windsor Locks, CT 06096
+        </p>
       </div>
     </div>
   );
 }
 
-/* ── styles ──────────────────────────────────────────────── */
+// --- Styles ---
 const styles = {
-  container: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "#111",
-    padding: 16,
-    fontFamily: "'Segoe UI', system-ui, sans-serif",
+  page: {
+    minHeight: '100vh',
+    background: '#0a0a0a',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    padding: '40px 16px',
+    fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif",
   },
   card: {
-    background: "#1a1a1a",
-    borderRadius: 12,
-    padding: 32,
-    maxWidth: 420,
-    width: "100%",
-    color: "#e5e5e5",
+    width: '100%',
+    maxWidth: '520px',
+    background: '#111111',
+    border: '1px solid #1a3a5c',
+    borderRadius: '12px',
+    padding: '36px 28px',
+    boxShadow: '0 0 40px rgba(0, 100, 200, 0.08)',
+  },
+  logo: {
+    display: 'block',
+    margin: '0 auto 24px',
+    maxWidth: '220px',
+    height: 'auto',
   },
   title: {
-    color: "#ef4444",
-    fontSize: 22,
-    fontWeight: 700,
-    textAlign: "center",
-    margin: 0,
+    color: '#ffffff',
+    fontSize: '22px',
+    fontWeight: '700',
+    textAlign: 'center',
+    margin: '0 0 6px',
+    letterSpacing: '0.5px',
   },
   subtitle: {
-    color: "#999",
-    fontSize: 14,
-    fontWeight: 400,
-    textAlign: "center",
-    marginTop: 4,
-    marginBottom: 20,
-  },
-  waiverText: {
-    background: "#222",
-    borderRadius: 8,
-    padding: 16,
-    fontSize: 13,
-    lineHeight: 1.5,
-    color: "#aaa",
-    marginBottom: 20,
-    maxHeight: 160,
-    overflowY: "auto",
+    color: '#7a8a9a',
+    fontSize: '14px',
+    textAlign: 'center',
+    margin: '0 0 28px',
   },
   form: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 16,
+    display: 'flex',
+    flexDirection: 'column',
   },
   label: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 4,
-    fontSize: 14,
-    fontWeight: 500,
+    color: '#c0d0e0',
+    fontSize: '13px',
+    fontWeight: '600',
+    marginBottom: '6px',
+    letterSpacing: '0.3px',
+    textTransform: 'uppercase',
   },
   input: {
-    padding: "10px 12px",
-    borderRadius: 6,
-    border: "1px solid #333",
-    background: "#222",
-    color: "#fff",
-    fontSize: 15,
-    outline: "none",
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    borderRadius: '8px',
+    padding: '12px 14px',
+    color: '#e0e8f0',
+    fontSize: '15px',
+    marginBottom: '18px',
+    outline: 'none',
+    transition: 'border-color 0.2s',
+  },
+  checkboxRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '10px',
+    marginBottom: '18px',
+  },
+  checkbox: {
+    marginTop: '3px',
+    accentColor: '#00bfff',
+    width: '18px',
+    height: '18px',
+    cursor: 'pointer',
+    flexShrink: 0,
   },
   checkboxLabel: {
-    display: "flex",
-    alignItems: "center",
-    fontSize: 13,
-    color: "#ccc",
-    cursor: "pointer",
+    color: '#b0c0d0',
+    fontSize: '14px',
+    lineHeight: '1.4',
+    cursor: 'pointer',
   },
-  sigSection: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 6,
+  waiverBox: {
+    background: '#0a1520',
+    border: '1px solid #1a2a3a',
+    borderRadius: '8px',
+    padding: '16px',
+    marginBottom: '18px',
+    maxHeight: '160px',
+    overflowY: 'auto',
   },
-  sigLabel: {
-    fontSize: 14,
-    fontWeight: 500,
+  waiverText: {
+    color: '#8090a0',
+    fontSize: '13px',
+    lineHeight: '1.6',
     margin: 0,
   },
   canvas: {
-    background: "#fff",
-    borderRadius: 6,
-    cursor: "crosshair",
-    touchAction: "none",
-    maxWidth: "100%",
+    width: '100%',
+    height: '120px',
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    borderRadius: '8px',
+    cursor: 'crosshair',
+    touchAction: 'none',
+    marginBottom: '8px',
   },
   clearBtn: {
-    alignSelf: "flex-start",
-    background: "none",
-    border: "none",
-    color: "#888",
-    fontSize: 12,
-    cursor: "pointer",
-    padding: 0,
-    textDecoration: "underline",
-  },
-  button: {
-    background: "#ef4444",
-    color: "#fff",
-    border: "none",
-    borderRadius: 6,
-    padding: "12px 0",
-    fontSize: 16,
-    fontWeight: 600,
-    cursor: "pointer",
-    marginTop: 8,
-  },
-  successBox: {
-    textAlign: "center",
-    padding: "40px 20px",
+    alignSelf: 'flex-end',
+    background: 'transparent',
+    border: 'none',
+    color: '#4a6a8a',
+    fontSize: '12px',
+    cursor: 'pointer',
+    padding: '4px 0',
+    marginBottom: '20px',
+    textDecoration: 'underline',
   },
   error: {
-    color: "#ef4444",
-    fontSize: 13,
-    margin: 0,
+    color: '#ff4466',
+    fontSize: '13px',
+    textAlign: 'center',
+    marginBottom: '14px',
+  },
+  button: {
+    background: 'linear-gradient(135deg, #0066cc, #00bfff)',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '8px',
+    padding: '14px',
+    fontSize: '16px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    letterSpacing: '0.5px',
+    transition: 'opacity 0.2s',
+  },
+  successIcon: {
+    width: '60px',
+    height: '60px',
+    borderRadius: '50%',
+    background: 'linear-gradient(135deg, #0066cc, #00bfff)',
+    color: '#fff',
+    fontSize: '30px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: '0 auto 16px',
+    fontWeight: '700',
+  },
+  successTitle: {
+    color: '#ffffff',
+    fontSize: '22px',
+    fontWeight: '700',
+    textAlign: 'center',
+    margin: '0 0 10px',
+  },
+  successText: {
+    color: '#b0c0d0',
+    fontSize: '15px',
+    textAlign: 'center',
+    margin: '0 0 6px',
+    lineHeight: '1.5',
+  },
+  successSubtext: {
+    color: '#5a7a9a',
+    fontSize: '13px',
+    textAlign: 'center',
+    margin: '0 0 24px',
+  },
+  footer: {
+    color: '#3a4a5a',
+    fontSize: '11px',
+    textAlign: 'center',
+    marginTop: '28px',
+    lineHeight: '1.4',
   },
 };
