@@ -20,7 +20,6 @@ export default function App() {
   const canvasRef = useRef(null);
   const isDrawing = useRef(false);
 
-  // --- Signature pad logic ---
   const getPos = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -77,7 +76,6 @@ export default function App() {
     return !data.some((channel, i) => i % 4 !== 3 ? false : channel !== 0);
   };
 
-  // --- Form submission ---
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
@@ -125,7 +123,6 @@ export default function App() {
     }
   };
 
-  // --- Success screen ---
   if (submitted) {
     return (
       <div style={styles.page}>
@@ -157,7 +154,6 @@ export default function App() {
     );
   }
 
-  // --- Waiver form ---
   return (
     <div style={styles.page}>
       <div style={styles.card}>
@@ -169,7 +165,6 @@ export default function App() {
         </p>
 
         <form onSubmit={handleSubmit} style={styles.form}>
-          {/* Full Name */}
           <label style={styles.label}>Full Name</label>
           <input
             type="text"
@@ -179,7 +174,6 @@ export default function App() {
             style={styles.input}
           />
 
-          {/* Email */}
           <label style={styles.label}>Email Address</label>
           <input
             type="email"
@@ -189,7 +183,6 @@ export default function App() {
             style={styles.input}
           />
 
-          {/* Minor checkbox */}
           <div style={styles.checkboxRow}>
             <input
               type="checkbox"
@@ -206,7 +199,6 @@ export default function App() {
             </label>
           </div>
 
-          {/* Minor name — conditional */}
           {isMinor && (
             <>
               <label style={styles.label}>Minor's Full Name</label>
@@ -220,7 +212,6 @@ export default function App() {
             </>
           )}
 
-          {/* Waiver text */}
           <div style={styles.waiverBox}>
             <p style={styles.waiverText}>
               By signing this waiver, I acknowledge and agree to the following terms as a
@@ -245,14 +236,10 @@ export default function App() {
                 As the parent, guardian, or representative of the minor named above, I certify
                 that I am authorized to sign on their behalf and accept responsibility for
                 their participation.</>
-              {isMinor && (
-                <> As the parent or legal guardian of the minor named above, I grant
-                permission for their participation and accept responsibility on their behalf.</>
               )}
             </p>
           </div>
 
-          {/* Agreement checkbox */}
           <div style={styles.checkboxRow}>
             <input
               type="checkbox"
@@ -266,7 +253,6 @@ export default function App() {
             </label>
           </div>
 
-          {/* Signature */}
           <label style={styles.label}>Signature</label>
           <canvas
             ref={canvasRef}
@@ -285,10 +271,8 @@ export default function App() {
             Clear Signature
           </button>
 
-          {/* Error */}
           {error && <p style={styles.error}>{error}</p>}
 
-          {/* Submit */}
           <button type="submit" disabled={loading} style={{
             ...styles.button,
             opacity: loading ? 0.6 : 1,
@@ -306,7 +290,6 @@ export default function App() {
   );
 }
 
-// --- Styles ---
 const styles = {
   page: {
     minHeight: '100vh',
