@@ -223,12 +223,28 @@ export default function App() {
           {/* Waiver text */}
           <div style={styles.waiverBox}>
             <p style={styles.waiverText}>
-              I acknowledge that participation in escape room activities at REACT Premium
-              Escape Rooms involves certain risks. I voluntarily assume all risks associated
-              with participation. I agree to follow all safety instructions and guidelines
-              provided by REACT staff. I release REACT Premium Escape Rooms, its owners,
-              employees, and agents from any and all liability for injuries or damages that
-              may occur during participation.
+              By signing this waiver, I acknowledge and agree to the following terms as a
+              condition of participating in any activity at REACT Premium Escape Rooms, owned
+              and operated by B.R. Entertainment LLC, on behalf of myself and any members of
+              my group:
+              <br /><br />
+              I will comply with all rules, regulations, and instructions issued by REACT
+              staff during my visit.
+              <br /><br />
+              I accept financial responsibility for any damages caused by negligent or
+              reckless actions by myself or members of my group.
+              <br /><br />
+              I release and hold harmless REACT Premium Escape Rooms, B.R. Entertainment LLC,
+              and their owners, employees, and agents from any and all liability arising from
+              my use of or presence upon their facilities.
+              <br /><br />
+              I have read this Release of Liability, assume all risks associated with
+              participation, and sign voluntarily and without inducement.
+              {isMinor && (
+                <><br /><br />
+                As the parent, guardian, or representative of the minor named above, I certify
+                that I am authorized to sign on their behalf and accept responsibility for
+                their participation.</>
               {isMinor && (
                 <> As the parent or legal guardian of the minor named above, I grant
                 permission for their participation and accept responsibility on their behalf.</>
