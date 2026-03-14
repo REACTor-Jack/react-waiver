@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -8,7 +8,12 @@ const supabase = createClient(
 
 const LOGO_URL = 'https://static.wixstatic.com/media/bbef2a_e5182ebf7aa047b99c23c4c98fec29db~mv2.png/v1/fill/w_276,h_110,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/HD%2520Logo-Transparent%2520BG-01_edited.png';
 
-export default function App() {
+const ADMIN_PASSWORD = 'Admin';
+
+// ============================================================
+// WAIVER FORM
+// ============================================================
+function WaiverForm() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [isMinor, setIsMinor] = useState(false);
@@ -290,6 +295,295 @@ export default function App() {
   );
 }
 
+// ============================================================
+// ADMIN DASHBOARD
+// ============================================================
+function AdminDashboard({ onLogout }) {
+  const [waivers, setWaivers] = useState([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selectedWaiver, setSelectedWaiver] = useState(null);
+
+  useEffect(() => {
+    fetchWaivers();
+  }, []);
+
+  const fetchWaivers = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data, error: dbError } = await supabase
+        .from('Waivers')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (dbError) throw dbError;
+      setWaivers(data || []);
+    } catch (err) {
+      setError('Failed to load waivers.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filtered = waivers.filter((w) => {
+    const q = search.toLowerCase();
+    return (
+      (w.full_name || '').toLowerCase().includes(q) ||
+      (w.email || '').toLowerCase().includes(q) ||
+      (w.minor_name || '').toLowerCase().includes(q)
+    );
+  });
+
+  const exportCSV = () => {
+    const headers = ['Date', 'Full Name', 'Email', 'Minor', 'Minor Name'];
+    const rows = filtered.map((w) => [
+      new Date(w.created_at).toLocaleDateString(),
+      w.full_name || '',
+      w.email || '',
+      w.is_minor ? 'Yes' : 'No',
+      w.minor_name || '',
+    ]);
+
+    const csvContent = [headers, ...rows]
+      .map((row) => row.map((cell) => '"' + String(cell).replace(/"/g, '""') + '"').join(','))
+      .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'react-waivers-' + new Date().toISOString().split('T')[0] + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const formatDate = (dateStr) => {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
+  // Waiver detail modal
+  if (selectedWaiver) {
+    return (
+      <div style={styles.page}>
+        <div style={{ ...styles.card, maxWidth: '600px' }}>
+          <div style={admin.headerRow}>
+            <h2 style={styles.title}>Waiver Details</h2>
+            <button onClick={() => setSelectedWaiver(null)} style={admin.backBtn}>
+              ← Back
+            </button>
+          </div>
+
+          <div style={admin.detailGroup}>
+            <span style={admin.detailLabel}>Name</span>
+            <span style={admin.detailValue}>{selectedWaiver.full_name}</span>
+          </div>
+          <div style={admin.detailGroup}>
+            <span style={admin.detailLabel}>Email</span>
+            <span style={admin.detailValue}>{selectedWaiver.email}</span>
+          </div>
+          <div style={admin.detailGroup}>
+            <span style={admin.detailLabel}>Date</span>
+            <span style={admin.detailValue}>{formatDate(selectedWaiver.created_at)}</span>
+          </div>
+          <div style={admin.detailGroup}>
+            <span style={admin.detailLabel}>Minor</span>
+            <span style={admin.detailValue}>
+              {selectedWaiver.is_minor ? 'Yes — ' + (selectedWaiver.minor_name || 'N/A') : 'No'}
+            </span>
+          </div>
+          {selectedWaiver.signature_url && (
+            <div style={admin.detailGroup}>
+              <span style={admin.detailLabel}>Signature</span>
+              <img
+                src={selectedWaiver.signature_url}
+                alt="Signature"
+                style={admin.signatureImg}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.page}>
+      <div style={{ ...styles.card, maxWidth: '700px' }}>
+        <img src={LOGO_URL} alt="REACT Premium Escape Rooms" style={styles.logo} />
+        <h1 style={styles.title}>Waiver Dashboard</h1>
+        <p style={{ ...styles.subtitle, marginBottom: '20px' }}>
+          {waivers.length} total waiver{waivers.length !== 1 ? 's' : ''} on file
+        </p>
+
+        <div style={admin.toolbar}>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, email, or minor..."
+            style={{ ...styles.input, marginBottom: 0, flex: 1 }}
+          />
+          <button onClick={exportCSV} style={admin.exportBtn}>
+            Export CSV
+          </button>
+        </div>
+
+        <div style={admin.actionRow}>
+          <button onClick={fetchWaivers} style={admin.refreshBtn}>
+            ↻ Refresh
+          </button>
+          <button onClick={onLogout} style={admin.logoutBtn}>
+            Log Out
+          </button>
+        </div>
+
+        {loading && <p style={admin.statusText}>Loading waivers...</p>}
+        {error && <p style={styles.error}>{error}</p>}
+
+        {!loading && filtered.length === 0 && (
+          <p style={admin.statusText}>
+            {search ? 'No waivers match your search.' : 'No waivers found.'}
+          </p>
+        )}
+
+        {!loading && filtered.length > 0 && (
+          <div style={admin.tableWrap}>
+            <table style={admin.table}>
+              <thead>
+                <tr>
+                  <th style={admin.th}>Date</th>
+                  <th style={admin.th}>Name</th>
+                  <th style={admin.th}>Email</th>
+                  <th style={admin.th}>Minor</th>
+                  <th style={admin.th}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((w) => (
+                  <tr key={w.id} style={admin.tr}>
+                    <td style={admin.td}>{new Date(w.created_at).toLocaleDateString()}</td>
+                    <td style={admin.td}>{w.full_name}</td>
+                    <td style={admin.td}>{w.email}</td>
+                    <td style={admin.td}>
+                      {w.is_minor ? (w.minor_name || 'Yes') : '—'}
+                    </td>
+                    <td style={admin.td}>
+                      <button
+                        onClick={() => setSelectedWaiver(w)}
+                        style={admin.viewBtn}
+                      >
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <p style={styles.footer}>
+          REACT Premium Escape Rooms · Admin Dashboard
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN LOGIN
+// ============================================================
+function AdminLogin({ onLogin }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    if (password === ADMIN_PASSWORD) {
+      onLogin();
+    } else {
+      setError('Incorrect password.');
+    }
+  };
+
+  return (
+    <div style={styles.page}>
+      <div style={{ ...styles.card, maxWidth: '400px' }}>
+        <img src={LOGO_URL} alt="REACT Premium Escape Rooms" style={styles.logo} />
+        <h1 style={styles.title}>Admin Login</h1>
+        <p style={styles.subtitle}>Enter the admin password to continue.</p>
+
+        <form onSubmit={handleLogin} style={styles.form}>
+          <label style={styles.label}>Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Enter password"
+            style={styles.input}
+          />
+          {error && <p style={styles.error}>{error}</p>}
+          <button type="submit" style={styles.button}>
+            Log In
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MAIN APP (Router)
+// ============================================================
+export default function App() {
+  const [page, setPage] = useState('waiver');
+  const [adminAuth, setAdminAuth] = useState(false);
+
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash.replace('#', '');
+      if (hash === 'admin') {
+        setPage('admin');
+      } else {
+        setPage('waiver');
+      }
+    };
+
+    handleHash();
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  if (page === 'admin') {
+    if (!adminAuth) {
+      return <AdminLogin onLogin={() => setAdminAuth(true)} />;
+    }
+    return (
+      <AdminDashboard
+        onLogout={() => {
+          setAdminAuth(false);
+          window.location.hash = '';
+        }}
+      />
+    );
+  }
+
+  return <WaiverForm />;
+}
+
+// ============================================================
+// STYLES — Waiver Form
+// ============================================================
 const styles = {
   page: {
     minHeight: '100vh',
@@ -465,5 +759,131 @@ const styles = {
     textAlign: 'center',
     marginTop: '28px',
     lineHeight: '1.4',
+  },
+};
+
+// ============================================================
+// STYLES — Admin Dashboard
+// ============================================================
+const admin = {
+  toolbar: {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '12px',
+    alignItems: 'center',
+  },
+  exportBtn: {
+    background: '#1a3a5c',
+    color: '#c0d0e0',
+    border: '1px solid #2a4a6c',
+    borderRadius: '8px',
+    padding: '12px 18px',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  actionRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    marginBottom: '20px',
+  },
+  refreshBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: '#4a8abf',
+    fontSize: '13px',
+    cursor: 'pointer',
+    padding: '4px 0',
+  },
+  logoutBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: '#6a4a4a',
+    fontSize: '13px',
+    cursor: 'pointer',
+    padding: '4px 0',
+  },
+  statusText: {
+    color: '#5a7a9a',
+    fontSize: '14px',
+    textAlign: 'center',
+    padding: '40px 0',
+  },
+  tableWrap: {
+    overflowX: 'auto',
+    borderRadius: '8px',
+    border: '1px solid #1a2a3a',
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse',
+    fontSize: '13px',
+  },
+  th: {
+    textAlign: 'left',
+    padding: '10px 12px',
+    color: '#7a8a9a',
+    fontWeight: '600',
+    fontSize: '11px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    borderBottom: '1px solid #1a2a3a',
+    background: '#0a1520',
+  },
+  tr: {
+    borderBottom: '1px solid #141e2a',
+  },
+  td: {
+    padding: '10px 12px',
+    color: '#b0c0d0',
+    verticalAlign: 'middle',
+  },
+  viewBtn: {
+    background: 'transparent',
+    border: '1px solid #1a3a5c',
+    color: '#4a9adf',
+    borderRadius: '6px',
+    padding: '4px 12px',
+    fontSize: '12px',
+    cursor: 'pointer',
+  },
+  headerRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '24px',
+  },
+  backBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: '#4a9adf',
+    fontSize: '14px',
+    cursor: 'pointer',
+  },
+  detailGroup: {
+    marginBottom: '18px',
+  },
+  detailLabel: {
+    display: 'block',
+    color: '#7a8a9a',
+    fontSize: '11px',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    marginBottom: '4px',
+  },
+  detailValue: {
+    color: '#e0e8f0',
+    fontSize: '15px',
+  },
+  signatureImg: {
+    maxWidth: '100%',
+    height: 'auto',
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    borderRadius: '8px',
+    padding: '8px',
+    marginTop: '4px',
   },
 };
