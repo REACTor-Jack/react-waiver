@@ -254,11 +254,15 @@ function WaiverForm() {
       });
 
       // Step 2: If minor, upsert the minor linked to the signer as guardian.
+      // Note: minor inherits guardian's email because the customers table has
+      // an `at_least_one_contact` check constraint (email OR phone NOT NULL).
+      // This is safe — match_customer uses 2-of-4 so different name+dob still
+      // distinguishes the minor from the guardian when they share an email.
       let minorCustomerId = null;
       if (isMinor) {
         minorCustomerId = await upsertCustomer({
           name: minorName.trim(),
-          email: null, // minors don't have email here
+          email: email.trim(), // inherit guardian's email — minor has no contact otherwise
           dob: minorDob,
           isMinorFlag: true,
           guardianId: signerCustomerId,
