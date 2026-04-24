@@ -11,17 +11,78 @@ const LOGO_URL = 'https://static.wixstatic.com/media/bbef2a_e5182ebf7aa047b99c23
 const ADMIN_PASSWORD = 'Admin';
 
 // ============================================================
-// WAIVER FORM (unchanged from previous version)
+// PHASE 3 WAIVER FORM
+// Changes from v1:
+//  - DOB (MM/YY) required for all
+//  - Minor flow collects guardian DOB + minor DOB
+//  - Optional booking code field (MM-DD-HHMM) for fallback linking
+//  - Writes to waivers_v2 (not legacy Waivers table)
+//  - Uses upsert_customer RPC + match_customer to link to booking
 // ============================================================
+
+// Month dropdown options
+const MONTHS = [
+  { v: '01', l: '01 — Jan' }, { v: '02', l: '02 — Feb' }, { v: '03', l: '03 — Mar' },
+  { v: '04', l: '04 — Apr' }, { v: '05', l: '05 — May' }, { v: '06', l: '06 — Jun' },
+  { v: '07', l: '07 — Jul' }, { v: '08', l: '08 — Aug' }, { v: '09', l: '09 — Sep' },
+  { v: '10', l: '10 — Oct' }, { v: '11', l: '11 — Nov' }, { v: '12', l: '12 — Dec' },
+];
+
+// Year dropdown: current year back to 100 years ago
+const CURRENT_YEAR = new Date().getFullYear();
+const YEARS = Array.from({ length: 101 }, (_, i) => {
+  const y = CURRENT_YEAR - i;
+  return { v: String(y).slice(-2), l: String(y) };
+});
+
+// Convert MM + YY -> YYYY-MM-01 (date string for Postgres date column)
+const buildDobDate = (mm, yy) => {
+  if (!mm || !yy) return null;
+  const yyyy = Number(yy) > 30 ? `19${yy}` : `20${yy}`;
+  return `${yyyy}-${mm}-01`;
+};
+
+// Parse MM-DD-HHMM booking code -> { datePart, startISO } for lookup
+// e.g. "04-26-1930" -> start time on April 26 at 19:30 in current year
+const parseBookingCode = (code) => {
+  const clean = (code || '').trim();
+  const m = clean.match(/^(\d{2})-(\d{2})-(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const [, mm, dd, hh, mn] = m;
+  // Assume current year. If current date is past this MM-DD by more than 60 days,
+  // assume next year instead (handles Dec bookings signed in Jan edge case).
+  const tryDate = new Date(`${CURRENT_YEAR}-${mm}-${dd}T${hh}:${mn}:00`);
+  const now = new Date();
+  const diffDays = (now - tryDate) / (1000 * 60 * 60 * 24);
+  let year = CURRENT_YEAR;
+  if (diffDays > 60) year = CURRENT_YEAR + 1;
+  return {
+    mm, dd, hh, mn,
+    startISO: `${year}-${mm}-${dd}T${hh}:${mn}:00`,
+  };
+};
+
 function WaiverForm() {
+  // Signer fields (adult or guardian)
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
+  const [dobMonth, setDobMonth] = useState('');
+  const [dobYear, setDobYear] = useState('');
+
+  // Minor fields (only if isMinor)
   const [isMinor, setIsMinor] = useState(false);
   const [minorName, setMinorName] = useState('');
+  const [minorDobMonth, setMinorDobMonth] = useState('');
+  const [minorDobYear, setMinorDobYear] = useState('');
+
+  // Optional fallback linking
+  const [bookingCode, setBookingCode] = useState('');
+
   const [agreed, setAgreed] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
   const canvasRef = useRef(null);
   const isDrawing = useRef(false);
 
@@ -81,16 +142,90 @@ function WaiverForm() {
     return !data.some((channel, i) => i % 4 !== 3 ? false : channel !== 0);
   };
 
+  // Resolve booking_id from booking code (if provided).
+  // Returns { bookingId, method } where method is 'booking_code' or 'unlinked' or 'invalid_code'
+  const resolveBookingByCode = async (code) => {
+    if (!code || !code.trim()) return { bookingId: null, method: null };
+    const parsed = parseBookingCode(code);
+    if (!parsed) return { bookingId: null, method: 'invalid_code' };
+
+    // Query bookings where booked_for falls within the same minute as the code.
+    // Use a 2-minute window to absorb timezone/second drift.
+    const start = new Date(parsed.startISO);
+    const winStart = new Date(start.getTime() - 60 * 1000).toISOString();
+    const winEnd = new Date(start.getTime() + 60 * 1000).toISOString();
+
+    const { data, error: qErr } = await supabase
+      .from('bookeo_bookings')
+      .select('id')
+      .gte('booked_for', winStart)
+      .lte('booked_for', winEnd)
+      .limit(1);
+
+    if (qErr || !data || data.length === 0) return { bookingId: null, method: 'invalid_code' };
+    return { bookingId: data[0].id, method: 'code_entry' };
+  };
+
+  // Try webhook-primed match via 2-of-4 (name + email + dob; phone not collected).
+  // Returns booking_id if the matched customer has exactly one confirmed booking.
+  const resolveBookingByMatch = async (customerId) => {
+    if (!customerId) return null;
+    const { data, error: qErr } = await supabase
+      .from('bookeo_bookings')
+      .select('id')
+      .eq('primary_contact_customer_id', customerId)
+      .eq('status', 'confirmed')
+      .order('booked_for', { ascending: false })
+      .limit(1);
+    if (qErr || !data || data.length === 0) return null;
+    return data[0].id;
+  };
+
+  // Upsert a customer via RPC. Returns customer UUID on success.
+  const upsertCustomer = async ({ name, email, dob, isMinorFlag, guardianId }) => {
+    const payload = {
+      p_full_name: name,
+      p_email: email || null,
+      p_phone: null, // not collected on this form
+      p_date_of_birth: dob,
+      p_is_minor: !!isMinorFlag,
+      p_guardian_customer_id: guardianId || null,
+      p_acquisition_source: 'waiver',
+      p_changed_via: 'waiver_v2',
+    };
+    const { data, error: rpcErr } = await supabase.rpc('upsert_customer', payload);
+    if (rpcErr) {
+      console.error('upsert_customer RPC failed:', rpcErr);
+      throw new Error('Could not save your info. Please try again or contact staff.');
+    }
+    return data; // expected to be a UUID string
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
 
+    // Validation
     if (!fullName.trim() || !email.trim()) {
       setError('Please fill in your name and email.');
       return;
     }
-    if (isMinor && !minorName.trim()) {
-      setError('Please enter the minor\'s name.');
+    if (!dobMonth || !dobYear) {
+      setError('Please enter your date of birth (MM/YY).');
+      return;
+    }
+    if (isMinor) {
+      if (!minorName.trim()) {
+        setError("Please enter the minor's name.");
+        return;
+      }
+      if (!minorDobMonth || !minorDobYear) {
+        setError("Please enter the minor's date of birth (MM/YY).");
+        return;
+      }
+    }
+    if (bookingCode.trim() && !/^\d{2}-\d{2}-\d{4}$/.test(bookingCode.trim())) {
+      setError('Booking code must be in MM-DD-HHMM format (e.g., 04-26-1930).');
       return;
     }
     if (!agreed) {
@@ -106,22 +241,72 @@ function WaiverForm() {
 
     try {
       const signatureDataUrl = canvasRef.current.toDataURL('image/png');
+      const signerDob = buildDobDate(dobMonth, dobYear);
+      const minorDob = isMinor ? buildDobDate(minorDobMonth, minorDobYear) : null;
 
-      const { error: dbError } = await supabase.from('Waivers').insert([
-        {
-          full_name: fullName.trim(),
-          email: email.trim(),
-          agreed: true,
-          signature_url: signatureDataUrl,
-          is_minor: isMinor,
-          minor_name: isMinor ? minorName.trim() : null,
-        },
-      ]);
+      // Step 1: Upsert the signer (adult or guardian).
+      const signerCustomerId = await upsertCustomer({
+        name: fullName.trim(),
+        email: email.trim(),
+        dob: signerDob,
+        isMinorFlag: false,
+        guardianId: null,
+      });
 
+      // Step 2: If minor, upsert the minor linked to the signer as guardian.
+      let minorCustomerId = null;
+      if (isMinor) {
+        minorCustomerId = await upsertCustomer({
+          name: minorName.trim(),
+          email: null, // minors don't have email here
+          dob: minorDob,
+          isMinorFlag: true,
+          guardianId: signerCustomerId,
+        });
+      }
+
+      // Step 3: Resolve booking link.
+      //   Priority 1: booking code (if provided and valid)
+      //   Priority 2: 2-of-4 customer match -> find their confirmed booking
+      //   Fallback:   unlinked (staff can link manually later)
+      let bookingId = null;
+      let linkMethod = 'unlinked';
+
+      const codeResult = await resolveBookingByCode(bookingCode);
+      if (codeResult.method === 'code_entry') {
+        bookingId = codeResult.bookingId;
+        linkMethod = 'code_entry';
+      } else if (codeResult.method === 'invalid_code') {
+        // Code was provided but didn't match — don't silently drop, just fall through to match.
+        // We still attempt webhook match below.
+      }
+
+      if (!bookingId) {
+        const matched = await resolveBookingByMatch(signerCustomerId);
+        if (matched) {
+          bookingId = matched;
+          linkMethod = 'webhook';
+        }
+      }
+
+      // Step 4: Insert the waiver into waivers_v2.
+      // waivers_v2 is intentionally lean — personal data lives on the customers table.
+      // The customer_id is: minor's id if this is a minor waiver, signer's id otherwise.
+      // Guardian linkage is tracked on the customers table (minor.guardian_customer_id).
+      const waiverRow = {
+        customer_id: isMinor ? minorCustomerId : signerCustomerId,
+        booking_id: bookingId,
+        booking_link_method: linkMethod,
+        agreed_at: new Date().toISOString(),
+        signature_url: signatureDataUrl,
+      };
+
+      const { error: dbError } = await supabase.from('waivers_v2').insert([waiverRow]);
       if (dbError) throw dbError;
+
       setSubmitted(true);
     } catch (err) {
-      setError('Something went wrong. Please try again.');
+      setError(err.message || 'Something went wrong. Please try again.');
       console.error(err);
     } finally {
       setLoading(false);
@@ -145,8 +330,13 @@ function WaiverForm() {
               setSubmitted(false);
               setFullName('');
               setEmail('');
+              setDobMonth('');
+              setDobYear('');
               setIsMinor(false);
               setMinorName('');
+              setMinorDobMonth('');
+              setMinorDobYear('');
+              setBookingCode('');
               setAgreed(false);
               clearSignature();
             }}
@@ -188,6 +378,30 @@ function WaiverForm() {
             style={styles.input}
           />
 
+          <label style={styles.label}>Date of Birth (MM / YY)</label>
+          <div style={styles.dobRow}>
+            <select
+              value={dobMonth}
+              onChange={(e) => setDobMonth(e.target.value)}
+              style={{ ...styles.input, ...styles.dobSelect }}
+            >
+              <option value="">MM</option>
+              {MONTHS.map((m) => (
+                <option key={m.v} value={m.v}>{m.l}</option>
+              ))}
+            </select>
+            <select
+              value={dobYear}
+              onChange={(e) => setDobYear(e.target.value)}
+              style={{ ...styles.input, ...styles.dobSelect }}
+            >
+              <option value="">YY</option>
+              {YEARS.map((y) => (
+                <option key={y.v} value={y.v}>{y.l}</option>
+              ))}
+            </select>
+          </div>
+
           <div style={styles.checkboxRow}>
             <input
               type="checkbox"
@@ -195,7 +409,11 @@ function WaiverForm() {
               checked={isMinor}
               onChange={(e) => {
                 setIsMinor(e.target.checked);
-                if (!e.target.checked) setMinorName('');
+                if (!e.target.checked) {
+                  setMinorName('');
+                  setMinorDobMonth('');
+                  setMinorDobYear('');
+                }
               }}
               style={styles.checkbox}
             />
@@ -214,8 +432,44 @@ function WaiverForm() {
                 placeholder="Enter the minor's full name"
                 style={styles.input}
               />
+
+              <label style={styles.label}>Minor's Date of Birth (MM / YY)</label>
+              <div style={styles.dobRow}>
+                <select
+                  value={minorDobMonth}
+                  onChange={(e) => setMinorDobMonth(e.target.value)}
+                  style={{ ...styles.input, ...styles.dobSelect }}
+                >
+                  <option value="">MM</option>
+                  {MONTHS.map((m) => (
+                    <option key={m.v} value={m.v}>{m.l}</option>
+                  ))}
+                </select>
+                <select
+                  value={minorDobYear}
+                  onChange={(e) => setMinorDobYear(e.target.value)}
+                  style={{ ...styles.input, ...styles.dobSelect }}
+                >
+                  <option value="">YY</option>
+                  {YEARS.map((y) => (
+                    <option key={y.v} value={y.v}>{y.l}</option>
+                  ))}
+                </select>
+              </div>
             </>
           )}
+
+          <label style={styles.label}>Booking Code (optional)</label>
+          <input
+            type="text"
+            value={bookingCode}
+            onChange={(e) => setBookingCode(e.target.value)}
+            placeholder="MM-DD-HHMM (only if staff asked you to)"
+            style={styles.input}
+          />
+          <p style={styles.helperText}>
+            Leave blank unless a staff member gave you a code. Your waiver will still link to your booking automatically.
+          </p>
 
           <div style={styles.waiverBox}>
             <p style={styles.waiverText}>
@@ -403,8 +657,7 @@ function GenericTableTab({ tableName, columns, orderBy = 'created_at', orderAsc 
 }
 
 // ============================================================
-// WAIVERS TAB — preserves original functionality
-// (renamed from AdminDashboard; same behavior, now inside a tab)
+// WAIVERS TAB — legacy Waivers table (read-only archive)
 // ============================================================
 function WaiversTab() {
   const [waivers, setWaivers] = useState([]);
@@ -592,11 +845,11 @@ function WaiversTab() {
 }
 
 // ============================================================
-// ADMIN DASHBOARD — tabbed layout wrapping WaiversTab + new tabs
+// ADMIN DASHBOARD — tabbed layout
 // ============================================================
 
 const TABS = [
-  { id: 'waivers', label: 'Waivers' },
+  { id: 'waivers', label: 'Waivers (Legacy)' },
   { id: 'customers', label: 'Customers' },
   { id: 'bookings', label: 'Bookings' },
   { id: 'waivers_v2', label: 'Waivers v2' },
@@ -606,7 +859,6 @@ const TABS = [
   { id: 'customer_update_log', label: 'Update Log' },
 ];
 
-// Column configs for each new table
 const TAB_CONFIGS = {
   customers: {
     tableName: 'customers',
@@ -640,8 +892,8 @@ const TAB_CONFIGS = {
     columns: [
       { key: 'created_at', label: 'Created', type: 'date' },
       { key: 'customer_id', label: 'Customer ID' },
-      { key: 'booking_id', label: 'Booking ID' },
       { key: 'booking_link_method', label: 'Link Method' },
+      { key: 'booking_id', label: 'Booking ID' },
       { key: 'agreed_at', label: 'Agreed', type: 'date' },
     ],
   },
@@ -696,7 +948,7 @@ const TAB_CONFIGS = {
 };
 
 function AdminDashboard({ onLogout }) {
-  const [activeTab, setActiveTab] = useState('waivers');
+  const [activeTab, setActiveTab] = useState('waivers_v2');
 
   const renderTab = () => {
     if (activeTab === 'waivers') return <WaiversTab />;
@@ -753,7 +1005,7 @@ function AdminDashboard({ onLogout }) {
 }
 
 // ============================================================
-// ADMIN LOGIN (unchanged)
+// ADMIN LOGIN
 // ============================================================
 function AdminLogin({ onLogin }) {
   const [password, setPassword] = useState('');
@@ -795,7 +1047,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ============================================================
-// MAIN APP (Router) — unchanged
+// MAIN APP
 // ============================================================
 export default function App() {
   const [page, setPage] = useState('waiver');
@@ -834,7 +1086,7 @@ export default function App() {
 }
 
 // ============================================================
-// STYLES — Waiver Form (unchanged)
+// STYLES — Waiver Form
 // ============================================================
 const styles = {
   page: {
@@ -897,6 +1149,23 @@ const styles = {
     marginBottom: '18px',
     outline: 'none',
     transition: 'border-color 0.2s',
+  },
+  dobRow: {
+    display: 'flex',
+    gap: '10px',
+    marginBottom: '18px',
+  },
+  dobSelect: {
+    flex: 1,
+    marginBottom: 0,
+    cursor: 'pointer',
+  },
+  helperText: {
+    color: '#5a7a9a',
+    fontSize: '12px',
+    marginTop: '-12px',
+    marginBottom: '18px',
+    lineHeight: '1.4',
   },
   checkboxRow: {
     display: 'flex',
@@ -1015,7 +1284,7 @@ const styles = {
 };
 
 // ============================================================
-// STYLES — Admin Dashboard (extended with tab styles)
+// STYLES — Admin Dashboard
 // ============================================================
 const admin = {
   tabBar: {
@@ -1190,4 +1459,4 @@ const admin = {
   },
 };
 
-// redeploy trigger
+// redeploy trigger — phase 3
