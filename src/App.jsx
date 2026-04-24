@@ -11,7 +11,7 @@ const LOGO_URL = 'https://static.wixstatic.com/media/bbef2a_e5182ebf7aa047b99c23
 const ADMIN_PASSWORD = 'Admin';
 
 // ============================================================
-// WAIVER FORM
+// WAIVER FORM (unchanged from previous version)
 // ============================================================
 function WaiverForm() {
   const [fullName, setFullName] = useState('');
@@ -296,9 +296,117 @@ function WaiverForm() {
 }
 
 // ============================================================
-// ADMIN DASHBOARD
+// GENERIC TABLE TAB — used for the new tables (read-only)
 // ============================================================
-function AdminDashboard({ onLogout }) {
+function GenericTableTab({ tableName, columns, orderBy = 'created_at', orderAsc = false, searchFields = [] }) {
+  const [rows, setRows] = useState([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    fetchRows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tableName]);
+
+  const fetchRows = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const { data, error: dbError } = await supabase
+        .from(tableName)
+        .select('*')
+        .order(orderBy, { ascending: orderAsc });
+
+      if (dbError) throw dbError;
+      setRows(data || []);
+    } catch (err) {
+      setError('Failed to load ' + tableName + '.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filtered = rows.filter((row) => {
+    if (!search) return true;
+    if (searchFields.length === 0) return true;
+    const q = search.toLowerCase();
+    return searchFields.some((field) =>
+      String(row[field] || '').toLowerCase().includes(q)
+    );
+  });
+
+  const formatCell = (value, type) => {
+    if (value === null || value === undefined) return <span style={admin.nullCell}>—</span>;
+    if (type === 'date') return new Date(value).toLocaleString();
+    if (type === 'bool') return value ? 'Yes' : 'No';
+    if (type === 'json') return <span style={admin.jsonCell}>{JSON.stringify(value).slice(0, 60)}...</span>;
+    if (typeof value === 'string' && value.length > 60) return value.slice(0, 60) + '...';
+    return String(value);
+  };
+
+  return (
+    <div>
+      <div style={admin.tabHeader}>
+        <p style={admin.tabCount}>
+          {rows.length} row{rows.length !== 1 ? 's' : ''}
+        </p>
+        <button onClick={fetchRows} style={admin.refreshBtn}>↻ Refresh</button>
+      </div>
+
+      {searchFields.length > 0 && (
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={'Search ' + searchFields.join(', ') + '...'}
+          style={{ ...styles.input, marginBottom: '12px' }}
+        />
+      )}
+
+      {loading && <p style={admin.statusText}>Loading...</p>}
+      {error && <p style={styles.error}>{error}</p>}
+
+      {!loading && filtered.length === 0 && (
+        <p style={admin.statusText}>
+          {search ? 'No matching rows.' : 'No rows yet. This table will populate as the system is used.'}
+        </p>
+      )}
+
+      {!loading && filtered.length > 0 && (
+        <div style={admin.tableWrap}>
+          <table style={admin.table}>
+            <thead>
+              <tr>
+                {columns.map((col) => (
+                  <th key={col.key} style={admin.th}>{col.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((row) => (
+                <tr key={row.id} style={admin.tr}>
+                  {columns.map((col) => (
+                    <td key={col.key} style={admin.td}>
+                      {formatCell(row[col.key], col.type)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// WAIVERS TAB — preserves original functionality
+// (renamed from AdminDashboard; same behavior, now inside a tab)
+// ============================================================
+function WaiversTab() {
   const [waivers, setWaivers] = useState([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -371,126 +479,270 @@ function AdminDashboard({ onLogout }) {
     });
   };
 
-  // Waiver detail modal
   if (selectedWaiver) {
     return (
-      <div style={styles.page}>
-        <div style={{ ...styles.card, maxWidth: '600px' }}>
-          <div style={admin.headerRow}>
-            <h2 style={styles.title}>Waiver Details</h2>
-            <button onClick={() => setSelectedWaiver(null)} style={admin.backBtn}>
-              ← Back
-            </button>
-          </div>
-
-          <div style={admin.detailGroup}>
-            <span style={admin.detailLabel}>Name</span>
-            <span style={admin.detailValue}>{selectedWaiver.full_name}</span>
-          </div>
-          <div style={admin.detailGroup}>
-            <span style={admin.detailLabel}>Email</span>
-            <span style={admin.detailValue}>{selectedWaiver.email}</span>
-          </div>
-          <div style={admin.detailGroup}>
-            <span style={admin.detailLabel}>Date</span>
-            <span style={admin.detailValue}>{formatDate(selectedWaiver.created_at)}</span>
-          </div>
-          <div style={admin.detailGroup}>
-            <span style={admin.detailLabel}>Minor</span>
-            <span style={admin.detailValue}>
-              {selectedWaiver.is_minor ? 'Yes — ' + (selectedWaiver.minor_name || 'N/A') : 'No'}
-            </span>
-          </div>
-          {selectedWaiver.signature_url && (
-            <div style={admin.detailGroup}>
-              <span style={admin.detailLabel}>Signature</span>
-              <img
-                src={selectedWaiver.signature_url}
-                alt="Signature"
-                style={admin.signatureImg}
-              />
-            </div>
-          )}
+      <div>
+        <div style={admin.headerRow}>
+          <h2 style={{ ...styles.title, textAlign: 'left', margin: 0 }}>Waiver Details</h2>
+          <button onClick={() => setSelectedWaiver(null)} style={admin.backBtn}>
+            ← Back
+          </button>
         </div>
+
+        <div style={admin.detailGroup}>
+          <span style={admin.detailLabel}>Name</span>
+          <span style={admin.detailValue}>{selectedWaiver.full_name}</span>
+        </div>
+        <div style={admin.detailGroup}>
+          <span style={admin.detailLabel}>Email</span>
+          <span style={admin.detailValue}>{selectedWaiver.email}</span>
+        </div>
+        <div style={admin.detailGroup}>
+          <span style={admin.detailLabel}>Date</span>
+          <span style={admin.detailValue}>{formatDate(selectedWaiver.created_at)}</span>
+        </div>
+        <div style={admin.detailGroup}>
+          <span style={admin.detailLabel}>Minor</span>
+          <span style={admin.detailValue}>
+            {selectedWaiver.is_minor ? 'Yes — ' + (selectedWaiver.minor_name || 'N/A') : 'No'}
+          </span>
+        </div>
+        {selectedWaiver.signature_url && (
+          <div style={admin.detailGroup}>
+            <span style={admin.detailLabel}>Signature</span>
+            <img
+              src={selectedWaiver.signature_url}
+              alt="Signature"
+              style={admin.signatureImg}
+            />
+          </div>
+        )}
       </div>
     );
   }
 
   return (
-    <div style={styles.page}>
-      <div style={{ ...styles.card, maxWidth: '700px' }}>
-        <img src={LOGO_URL} alt="REACT Premium Escape Rooms" style={styles.logo} />
-        <h1 style={styles.title}>Waiver Dashboard</h1>
-        <p style={{ ...styles.subtitle, marginBottom: '20px' }}>
+    <div>
+      <div style={admin.tabHeader}>
+        <p style={admin.tabCount}>
           {waivers.length} total waiver{waivers.length !== 1 ? 's' : ''} on file
         </p>
+        <button onClick={fetchWaivers} style={admin.refreshBtn}>↻ Refresh</button>
+      </div>
 
-        <div style={admin.toolbar}>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name, email, or minor..."
-            style={{ ...styles.input, marginBottom: 0, flex: 1 }}
-          />
-          <button onClick={exportCSV} style={admin.exportBtn}>
-            Export CSV
-          </button>
+      <div style={admin.toolbar}>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name, email, or minor..."
+          style={{ ...styles.input, marginBottom: 0, flex: 1 }}
+        />
+        <button onClick={exportCSV} style={admin.exportBtn}>
+          Export CSV
+        </button>
+      </div>
+
+      {loading && <p style={admin.statusText}>Loading waivers...</p>}
+      {error && <p style={styles.error}>{error}</p>}
+
+      {!loading && filtered.length === 0 && (
+        <p style={admin.statusText}>
+          {search ? 'No waivers match your search.' : 'No waivers found.'}
+        </p>
+      )}
+
+      {!loading && filtered.length > 0 && (
+        <div style={admin.tableWrap}>
+          <table style={admin.table}>
+            <thead>
+              <tr>
+                <th style={admin.th}>Date</th>
+                <th style={admin.th}>Name</th>
+                <th style={admin.th}>Email</th>
+                <th style={admin.th}>Minor</th>
+                <th style={admin.th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((w) => (
+                <tr key={w.id} style={admin.tr}>
+                  <td style={admin.td}>{new Date(w.created_at).toLocaleDateString()}</td>
+                  <td style={admin.td}>{w.full_name}</td>
+                  <td style={admin.td}>{w.email}</td>
+                  <td style={admin.td}>
+                    {w.is_minor ? (w.minor_name || 'Yes') : '—'}
+                  </td>
+                  <td style={admin.td}>
+                    <button
+                      onClick={() => setSelectedWaiver(w)}
+                      style={admin.viewBtn}
+                    >
+                      View
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// ADMIN DASHBOARD — tabbed layout wrapping WaiversTab + new tabs
+// ============================================================
+
+const TABS = [
+  { id: 'waivers', label: 'Waivers' },
+  { id: 'customers', label: 'Customers' },
+  { id: 'bookings', label: 'Bookings' },
+  { id: 'waivers_v2', label: 'Waivers v2' },
+  { id: 'games_played', label: 'Games Played' },
+  { id: 'group_photos', label: 'Group Photos' },
+  { id: 'webhook_events', label: 'Webhook Log' },
+  { id: 'customer_update_log', label: 'Update Log' },
+];
+
+// Column configs for each new table
+const TAB_CONFIGS = {
+  customers: {
+    tableName: 'customers',
+    searchFields: ['full_name', 'email', 'phone'],
+    columns: [
+      { key: 'created_at', label: 'Created', type: 'date' },
+      { key: 'full_name', label: 'Name' },
+      { key: 'email', label: 'Email' },
+      { key: 'phone', label: 'Phone' },
+      { key: 'date_of_birth', label: 'DOB' },
+      { key: 'participant_type', label: 'Type' },
+      { key: 'acquisition_source', label: 'Source' },
+      { key: 'is_minor', label: 'Minor', type: 'bool' },
+    ],
+  },
+  bookings: {
+    tableName: 'bookeo_bookings',
+    searchFields: ['bookeo_booking_id', 'room_name'],
+    columns: [
+      { key: 'created_at', label: 'Created', type: 'date' },
+      { key: 'bookeo_booking_id', label: 'Bookeo ID' },
+      { key: 'room_name', label: 'Room' },
+      { key: 'booked_for', label: 'Booked For', type: 'date' },
+      { key: 'participant_count', label: 'Party' },
+      { key: 'status', label: 'Status' },
+    ],
+  },
+  waivers_v2: {
+    tableName: 'waivers_v2',
+    searchFields: [],
+    columns: [
+      { key: 'created_at', label: 'Created', type: 'date' },
+      { key: 'customer_id', label: 'Customer ID' },
+      { key: 'booking_id', label: 'Booking ID' },
+      { key: 'booking_link_method', label: 'Link Method' },
+      { key: 'agreed_at', label: 'Agreed', type: 'date' },
+    ],
+  },
+  games_played: {
+    tableName: 'games_played',
+    searchFields: ['room_name'],
+    columns: [
+      { key: 'played_at', label: 'Played', type: 'date' },
+      { key: 'customer_id', label: 'Customer ID' },
+      { key: 'room_name', label: 'Room' },
+      { key: 'outcome', label: 'Outcome' },
+      { key: 'time_remaining', label: 'Time Left' },
+      { key: 'source', label: 'Source' },
+    ],
+    orderBy: 'played_at',
+  },
+  group_photos: {
+    tableName: 'group_photos',
+    searchFields: ['caption'],
+    columns: [
+      { key: 'created_at', label: 'Uploaded', type: 'date' },
+      { key: 'uploader_type', label: 'Uploader' },
+      { key: 'booking_id', label: 'Booking ID' },
+      { key: 'customer_id', label: 'Customer ID' },
+      { key: 'caption', label: 'Caption' },
+    ],
+  },
+  webhook_events: {
+    tableName: 'webhook_events',
+    searchFields: ['event_type', 'processing_status'],
+    columns: [
+      { key: 'created_at', label: 'Received', type: 'date' },
+      { key: 'source', label: 'Source' },
+      { key: 'event_type', label: 'Event' },
+      { key: 'processing_status', label: 'Status' },
+      { key: 'error_message', label: 'Error' },
+      { key: 'payload', label: 'Payload', type: 'json' },
+    ],
+  },
+  customer_update_log: {
+    tableName: 'customer_update_log',
+    searchFields: ['field_changed', 'changed_via'],
+    columns: [
+      { key: 'created_at', label: 'Changed', type: 'date' },
+      { key: 'customer_id', label: 'Customer ID' },
+      { key: 'field_changed', label: 'Field' },
+      { key: 'old_value', label: 'Old' },
+      { key: 'new_value', label: 'New' },
+      { key: 'changed_via', label: 'Via' },
+    ],
+  },
+};
+
+function AdminDashboard({ onLogout }) {
+  const [activeTab, setActiveTab] = useState('waivers');
+
+  const renderTab = () => {
+    if (activeTab === 'waivers') return <WaiversTab />;
+    const config = TAB_CONFIGS[activeTab];
+    if (!config) return null;
+    return (
+      <GenericTableTab
+        tableName={config.tableName}
+        columns={config.columns}
+        orderBy={config.orderBy || 'created_at'}
+        orderAsc={false}
+        searchFields={config.searchFields}
+      />
+    );
+  };
+
+  return (
+    <div style={styles.page}>
+      <div style={{ ...styles.card, maxWidth: '1100px' }}>
+        <img src={LOGO_URL} alt="REACT Premium Escape Rooms" style={styles.logo} />
+        <h1 style={styles.title}>Admin Dashboard</h1>
+
+        <div style={admin.tabBar}>
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                ...admin.tabBtn,
+                ...(activeTab === tab.id ? admin.tabBtnActive : {}),
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
 
-        <div style={admin.actionRow}>
-          <button onClick={fetchWaivers} style={admin.refreshBtn}>
-            ↻ Refresh
-          </button>
+        <div style={admin.tabContent}>
+          {renderTab()}
+        </div>
+
+        <div style={admin.footerRow}>
           <button onClick={onLogout} style={admin.logoutBtn}>
             Log Out
           </button>
         </div>
-
-        {loading && <p style={admin.statusText}>Loading waivers...</p>}
-        {error && <p style={styles.error}>{error}</p>}
-
-        {!loading && filtered.length === 0 && (
-          <p style={admin.statusText}>
-            {search ? 'No waivers match your search.' : 'No waivers found.'}
-          </p>
-        )}
-
-        {!loading && filtered.length > 0 && (
-          <div style={admin.tableWrap}>
-            <table style={admin.table}>
-              <thead>
-                <tr>
-                  <th style={admin.th}>Date</th>
-                  <th style={admin.th}>Name</th>
-                  <th style={admin.th}>Email</th>
-                  <th style={admin.th}>Minor</th>
-                  <th style={admin.th}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((w) => (
-                  <tr key={w.id} style={admin.tr}>
-                    <td style={admin.td}>{new Date(w.created_at).toLocaleDateString()}</td>
-                    <td style={admin.td}>{w.full_name}</td>
-                    <td style={admin.td}>{w.email}</td>
-                    <td style={admin.td}>
-                      {w.is_minor ? (w.minor_name || 'Yes') : '—'}
-                    </td>
-                    <td style={admin.td}>
-                      <button
-                        onClick={() => setSelectedWaiver(w)}
-                        style={admin.viewBtn}
-                      >
-                        View
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
 
         <p style={styles.footer}>
           REACT Premium Escape Rooms · Admin Dashboard
@@ -501,7 +753,7 @@ function AdminDashboard({ onLogout }) {
 }
 
 // ============================================================
-// ADMIN LOGIN
+// ADMIN LOGIN (unchanged)
 // ============================================================
 function AdminLogin({ onLogin }) {
   const [password, setPassword] = useState('');
@@ -543,7 +795,7 @@ function AdminLogin({ onLogin }) {
 }
 
 // ============================================================
-// MAIN APP (Router)
+// MAIN APP (Router) — unchanged
 // ============================================================
 export default function App() {
   const [page, setPage] = useState('waiver');
@@ -582,7 +834,7 @@ export default function App() {
 }
 
 // ============================================================
-// STYLES — Waiver Form
+// STYLES — Waiver Form (unchanged)
 // ============================================================
 const styles = {
   page: {
@@ -763,13 +1015,51 @@ const styles = {
 };
 
 // ============================================================
-// STYLES — Admin Dashboard
+// STYLES — Admin Dashboard (extended with tab styles)
 // ============================================================
 const admin = {
+  tabBar: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '6px',
+    marginBottom: '20px',
+    borderBottom: '1px solid #1a2a3a',
+    paddingBottom: '12px',
+  },
+  tabBtn: {
+    background: 'transparent',
+    color: '#5a7a9a',
+    border: '1px solid transparent',
+    borderRadius: '6px',
+    padding: '8px 14px',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+  },
+  tabBtnActive: {
+    background: '#0d1b2a',
+    color: '#00bfff',
+    border: '1px solid #1a3a5c',
+  },
+  tabContent: {
+    minHeight: '200px',
+  },
+  tabHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '12px',
+  },
+  tabCount: {
+    color: '#7a8a9a',
+    fontSize: '13px',
+    margin: 0,
+  },
   toolbar: {
     display: 'flex',
     gap: '10px',
-    marginBottom: '12px',
+    marginBottom: '16px',
     alignItems: 'center',
   },
   exportBtn: {
@@ -783,11 +1073,6 @@ const admin = {
     cursor: 'pointer',
     whiteSpace: 'nowrap',
   },
-  actionRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    marginBottom: '20px',
-  },
   refreshBtn: {
     background: 'transparent',
     border: 'none',
@@ -795,6 +1080,13 @@ const admin = {
     fontSize: '13px',
     cursor: 'pointer',
     padding: '4px 0',
+  },
+  footerRow: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    marginTop: '24px',
+    paddingTop: '16px',
+    borderTop: '1px solid #1a2a3a',
   },
   logoutBtn: {
     background: 'transparent',
@@ -830,6 +1122,7 @@ const admin = {
     letterSpacing: '0.5px',
     borderBottom: '1px solid #1a2a3a',
     background: '#0a1520',
+    whiteSpace: 'nowrap',
   },
   tr: {
     borderBottom: '1px solid #141e2a',
@@ -838,6 +1131,15 @@ const admin = {
     padding: '10px 12px',
     color: '#b0c0d0',
     verticalAlign: 'middle',
+    whiteSpace: 'nowrap',
+  },
+  nullCell: {
+    color: '#3a4a5a',
+  },
+  jsonCell: {
+    color: '#6a8aaf',
+    fontFamily: 'monospace',
+    fontSize: '11px',
   },
   viewBtn: {
     background: 'transparent',
