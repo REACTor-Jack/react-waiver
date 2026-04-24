@@ -1,20 +1,21 @@
 // =============================================================
-// /api/bookeo-webhook.js
-// Receives Bookeo webhooks (booking.created, booking.updated,
-// booking.canceled), validates token, logs event, upserts
-// customer and booking records.
+// /api/bookeo-webhook.js (v2)
+// Receives Bookeo webhooks, validates token, logs event,
+// upserts customer and booking records.
 //
-// Setup:
-// 1. Place this file at /api/bookeo-webhook.js in the React repo
-// 2. Add these environment variables in Vercel:
-//      BOOKEO_WEBHOOK_TOKEN  — the secret token in the URL path
-//      BOOKEO_API_KEY        — for outbound calls to Bookeo
-//      BOOKEO_SECRET_KEY     — for outbound calls to Bookeo
-//      SUPABASE_URL          — https://wtspmrqnatbnexinspzb.supabase.co
-//      SUPABASE_SERVICE_KEY  — service_role key (NOT anon) for writes
-// 3. After deploy, webhook URL is:
-//      https://react-waiver.vercel.app/api/bookeo-webhook?token=<BOOKEO_WEBHOOK_TOKEN>
-// 4. Register this URL in Bookeo → Apps & API → Webhooks
+// CHANGES from v1:
+// - Event type now read from ?eventType= URL parameter (Bookeo
+//   does not include event type in payload body or HTTP headers).
+// - Captures X-Bookeo-MessageId header for deduplication and logs
+//   it on the webhook_events row.
+// - Updated payload parsing for actual Bookeo shape:
+//   { item: {...booking fields...}, itemId, timestamp }
+//   Customer is on item.customer; bookingId is itemId.
+// - Idempotency check: if X-Bookeo-MessageId already processed,
+//   short-circuit with 200 OK.
+//
+// Setup unchanged. Webhook URLs need to be registered with the
+// new pattern: ?token=...&eventType=created (or updated/deleted).
 // =============================================================
 
 import { createClient } from '@supabase/supabase-js';
@@ -31,47 +32,37 @@ const BOOKEO_API_BASE = 'https://api.bookeo.com/v2';
 // Helpers
 // =============================================================
 
-async function logWebhookEvent(eventType, payload, status, errorMessage = null) {
+async function logWebhookEvent(eventType, payload, status, errorMessage = null, messageId = null) {
   try {
-    await supabase.from('webhook_events').insert([{
+    const row = {
       source: 'bookeo',
       event_type: eventType,
-      payload: payload,
+      payload: messageId ? { ...payload, _messageId: messageId } : payload,
       processing_status: status,
       error_message: errorMessage,
-    }]);
+    };
+    const { data, error } = await supabase.from('webhook_events').insert([row]).select('id').single();
+    if (error) console.error('webhook_events insert error:', error);
+    return data?.id;
   } catch (err) {
     console.error('Failed to log webhook event:', err);
+    return null;
   }
 }
 
-async function bookeoApiGet(path) {
-  const separator = path.includes('?') ? '&' : '?';
-  const url = `${BOOKEO_API_BASE}${path}${separator}apiKey=${process.env.BOOKEO_API_KEY}&secretKey=${process.env.BOOKEO_SECRET_KEY}`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Bookeo API ${res.status}: ${text.slice(0, 200)}`);
-  }
-  return res.json();
+async function alreadyProcessed(messageId) {
+  if (!messageId) return false;
+  const { data } = await supabase
+    .from('webhook_events')
+    .select('id')
+    .eq('source', 'bookeo')
+    .eq('processing_status', 'processed')
+    .filter('payload->>_messageId', 'eq', messageId)
+    .limit(1);
+  return Array.isArray(data) && data.length > 0;
 }
 
-// Derive a single readable room name from a booking payload.
-// Bookeo bookings reference a productId; we attempt to use the
-// productName if the webhook/fetch provides it, else fall back.
-function extractRoomName(booking) {
-  return booking.productName
-    || booking.title
-    || booking.eventId?.split('_')?.[0]
-    || 'unknown';
-}
-
-// Parse Bookeo's "customer" payload shape into fields our upsert_customer
-// function expects. Bookeo sends firstName/lastName separately; we
-// combine. Phone is "phoneNumbers": [{number, type}].
+// Parse the booking customer block into upsert_customer fields.
 function parseCustomer(c) {
   if (!c) return null;
   const name = [c.firstName, c.lastName].filter(Boolean).join(' ').trim()
@@ -82,40 +73,44 @@ function parseCustomer(c) {
   if (Array.isArray(c.phoneNumbers) && c.phoneNumbers.length > 0) {
     phone = c.phoneNumbers[0].number || null;
   }
-  const dob = c.dateOfBirth || null; // 'YYYY-MM-DD' if Bookeo has it
+  // Bookeo does not always provide DOB; tolerate missing.
+  const dob = c.dateOfBirth || null;
   return { name, email, phone, dob };
 }
 
+function extractRoomName(item) {
+  // Bookeo gives us productId and a title (often the customer name on
+  // tour bookings). Prefer productName when present; fall back to a
+  // truncated productId so we always have *something* readable.
+  return item.productName
+    || item.productId
+    || (item.eventId ? item.eventId.split('_')[1] : null)
+    || 'unknown';
+}
+
 // =============================================================
-// Handlers per event type
+// Handlers
 // =============================================================
 
-async function handleBookingCreated(booking) {
-  const bookeoBookingId = booking.bookingNumber || booking.id;
-  if (!bookeoBookingId) throw new Error('missing booking id in payload');
+async function handleBookingCreated(item, itemId) {
+  if (!itemId) throw new Error('missing itemId');
 
-  // 1. Resolve the booker's customer info.
-  // Bookeo sometimes inlines customer data, sometimes requires a follow-up fetch.
-  let customer = booking.customer;
-  if (!customer && booking.customerId) {
-    try {
-      customer = await bookeoApiGet(`/customers/${booking.customerId}`);
-    } catch (err) {
-      // Non-fatal — we can still store the booking with a minimal customer record
-      console.warn('Could not fetch customer:', err.message);
-    }
-  }
+  const parsed = parseCustomer(item.customer);
 
-  const parsed = parseCustomer(customer);
+  // Build a customer record. Bookeo rarely sends DOB; substitute a
+  // placeholder so the constraint is satisfied. The customer's first
+  // waiver signature will overwrite the placeholder via upsert_customer.
+  const dobForUpsert = parsed?.dob || '1900-01-01';
+  const phoneForConstraint = parsed?.phone
+    || (parsed?.email ? null : `placeholder_${itemId}`);
 
-  // 2. Upsert the customer record (booker_only if first contact).
   let customerId = null;
-  if (parsed && parsed.name && (parsed.email || parsed.phone) && parsed.dob) {
+  if (parsed && parsed.name && (parsed.email || parsed.phone)) {
     const { data, error } = await supabase.rpc('upsert_customer', {
       p_full_name: parsed.name,
       p_email: parsed.email,
       p_phone: parsed.phone,
-      p_date_of_birth: parsed.dob,
+      p_date_of_birth: dobForUpsert,
       p_is_minor: false,
       p_guardian_customer_id: null,
       p_acquisition_source: 'booking',
@@ -126,90 +121,90 @@ async function handleBookingCreated(booking) {
     if (error) throw new Error(`upsert_customer: ${error.message}`);
     customerId = data;
   } else {
-    // We can't satisfy the customers table constraints (DOB required,
-    // at least one of email/phone required). Skip customer creation;
-    // the booking row will have primary_contact_customer_id = null
-    // handled below by creating a placeholder.
-    console.warn('Incomplete customer data from Bookeo; creating placeholder.');
-    const { data: placeholder, error: phErr } = await supabase
+    // Bookeo gave us nothing usable — create a true placeholder so the
+    // booking row can still link to a customer FK.
+    const { data: ph, error: phErr } = await supabase
       .from('customers')
       .insert([{
-        full_name: parsed?.name || 'Unknown Booker',
+        full_name: parsed?.name || `Bookeo booking ${itemId}`,
         email: parsed?.email || null,
-        phone: parsed?.phone || `placeholder_${bookeoBookingId}`, // satisfy at-least-one constraint
-        date_of_birth: parsed?.dob || '1900-01-01', // placeholder DOB; will be updated when they sign a waiver
+        phone: phoneForConstraint,
+        date_of_birth: dobForUpsert,
         participant_type: 'booker_only',
         acquisition_source: 'booking',
-        notes: 'Placeholder — Bookeo did not provide DOB. Updated on first waiver signature.',
+        notes: 'Placeholder created from Bookeo webhook with incomplete customer data',
       }])
-      .select('id')
-      .single();
+      .select('id').single();
     if (phErr) throw new Error(`placeholder customer: ${phErr.message}`);
-    customerId = placeholder.id;
+    customerId = ph.id;
   }
 
-  // 3. Insert the bookeo_bookings row (idempotent via bookeo_booking_id unique constraint).
-  const bookedFor = booking.startTime || booking.start || null;
-  const participantCount = booking.numberOfParticipants
-    || booking.participants?.numbers?.reduce((sum, p) => sum + (p.number || 0), 0)
+  // Booking row
+  const bookedFor = item.startTime || item.start || null;
+  const participantCount =
+    (Array.isArray(item.participants?.numbers)
+      ? item.participants.numbers.reduce((s, p) => s + (p.number || 0), 0)
+      : null)
+    || item.numberOfParticipants
     || 1;
 
-  const { error: bookingError } = await supabase
+  const { error: bErr } = await supabase
     .from('bookeo_bookings')
-    .upsert(
-      {
-        bookeo_booking_id: String(bookeoBookingId),
-        room_name: extractRoomName(booking),
-        booked_for: bookedFor,
-        primary_contact_customer_id: customerId,
-        participant_count: participantCount,
-        status: 'confirmed',
-        raw_webhook_payload: booking,
-      },
-      { onConflict: 'bookeo_booking_id' }
-    );
-  if (bookingError) throw new Error(`booking upsert: ${bookingError.message}`);
+    .upsert({
+      bookeo_booking_id: String(itemId),
+      room_name: extractRoomName(item),
+      booked_for: bookedFor,
+      primary_contact_customer_id: customerId,
+      participant_count: participantCount,
+      status: item.canceled ? 'canceled' : 'confirmed',
+      raw_webhook_payload: item,
+    }, { onConflict: 'bookeo_booking_id' });
+  if (bErr) throw new Error(`booking upsert: ${bErr.message}`);
 
-  return { customerId, bookeoBookingId };
+  return { customerId, bookeoBookingId: itemId };
 }
 
-async function handleBookingUpdated(booking) {
-  const bookeoBookingId = booking.bookingNumber || booking.id;
-  if (!bookeoBookingId) throw new Error('missing booking id in payload');
+async function handleBookingUpdated(item, itemId) {
+  if (!itemId) throw new Error('missing itemId');
 
-  const bookedFor = booking.startTime || booking.start || null;
-  const participantCount = booking.numberOfParticipants
-    || booking.participants?.numbers?.reduce((sum, p) => sum + (p.number || 0), 0)
+  const bookedFor = item.startTime || item.start || null;
+  const participantCount =
+    (Array.isArray(item.participants?.numbers)
+      ? item.participants.numbers.reduce((s, p) => s + (p.number || 0), 0)
+      : null)
+    || item.numberOfParticipants
     || 1;
 
+  // Use upsert in case the update arrives before we've seen a created event
+  // (Bookeo guarantees ordering per booking, but defensive).
   const { error } = await supabase
     .from('bookeo_bookings')
-    .update({
-      room_name: extractRoomName(booking),
+    .upsert({
+      bookeo_booking_id: String(itemId),
+      room_name: extractRoomName(item),
       booked_for: bookedFor,
       participant_count: participantCount,
-      raw_webhook_payload: booking,
-    })
-    .eq('bookeo_booking_id', String(bookeoBookingId));
+      status: item.canceled ? 'canceled' : 'confirmed',
+      raw_webhook_payload: item,
+    }, { onConflict: 'bookeo_booking_id' });
   if (error) throw new Error(`booking update: ${error.message}`);
 
-  return { bookeoBookingId };
+  return { bookeoBookingId: itemId };
 }
 
-async function handleBookingCanceled(booking) {
-  const bookeoBookingId = booking.bookingNumber || booking.id;
-  if (!bookeoBookingId) throw new Error('missing booking id in payload');
+async function handleBookingDeleted(item, itemId) {
+  if (!itemId) throw new Error('missing itemId');
 
   const { error } = await supabase
     .from('bookeo_bookings')
     .update({
       status: 'canceled',
-      raw_webhook_payload: booking,
+      raw_webhook_payload: item,
     })
-    .eq('bookeo_booking_id', String(bookeoBookingId));
+    .eq('bookeo_booking_id', String(itemId));
   if (error) throw new Error(`booking cancel: ${error.message}`);
 
-  return { bookeoBookingId };
+  return { bookeoBookingId: itemId };
 }
 
 // =============================================================
@@ -217,11 +212,10 @@ async function handleBookingCanceled(booking) {
 // =============================================================
 
 export default async function handler(req, res) {
-  // CORS / method check
+  // Liveness check
   if (req.method === 'GET') {
-    // Allow a quick liveness check: /api/bookeo-webhook?token=...&ping=1
     if (req.query.token === process.env.BOOKEO_WEBHOOK_TOKEN && req.query.ping) {
-      return res.status(200).json({ ok: true, service: 'bookeo-webhook' });
+      return res.status(200).json({ ok: true, service: 'bookeo-webhook', version: 2 });
     }
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -230,53 +224,55 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // Validate token in URL
+  // Validate token
   if (req.query.token !== process.env.BOOKEO_WEBHOOK_TOKEN) {
-    // Do NOT log the attempt with payload — could be a noisy attacker
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+  // Event type from URL param (Bookeo recommended pattern)
+  const eventType = req.query.eventType || 'unknown';
+  const messageId = req.headers['x-bookeo-messageid']
+    || req.headers['x-bookeo-message-id']
+    || null;
   const payload = req.body || {};
-  const eventType = payload.event || payload.type || 'unknown';
 
-  // Log event as received before processing
-  await logWebhookEvent(eventType, payload, 'received');
+  // Idempotency: if we've already processed this messageId, ack and skip
+  if (messageId && await alreadyProcessed(messageId)) {
+    await logWebhookEvent(eventType, payload, 'duplicate_skipped', null, messageId);
+    return res.status(200).json({ ok: true, duplicate: true, messageId });
+  }
+
+  // Log received
+  await logWebhookEvent(eventType, payload, 'received', null, messageId);
 
   try {
-    // Bookeo's webhook payload shape varies by event. Common fields:
-    // { event: 'booking.created' | 'booking.updated' | 'booking.canceled',
-    //   booking: { ... } }
-    // Some tenants send the booking fields at the top level. Handle both.
-    const booking = payload.booking || payload;
+    // Bookeo's actual payload shape: { item: {...}, itemId, timestamp }
+    const item = payload.item || payload.booking || payload;
+    const itemId = payload.itemId || item.bookingNumber || item.id;
 
     let result;
     switch (eventType) {
-      case 'booking.created':
-      case 'booking.new':
-        result = await handleBookingCreated(booking);
+      case 'created':
+        result = await handleBookingCreated(item, itemId);
         break;
-      case 'booking.updated':
-      case 'booking.changed':
-        result = await handleBookingUpdated(booking);
+      case 'updated':
+        result = await handleBookingUpdated(item, itemId);
         break;
-      case 'booking.canceled':
-      case 'booking.cancelled':
-      case 'booking.deleted':
-        result = await handleBookingCanceled(booking);
+      case 'deleted':
+      case 'canceled':
+        result = await handleBookingDeleted(item, itemId);
         break;
       default:
-        // Unknown event — log and accept so Bookeo doesn't retry.
-        await logWebhookEvent(eventType, payload, 'ignored_unknown_type');
+        await logWebhookEvent(eventType, payload, 'ignored_unknown_type', null, messageId);
         return res.status(200).json({ ok: true, ignored: eventType });
     }
 
-    await logWebhookEvent(eventType, payload, 'processed');
+    await logWebhookEvent(eventType, payload, 'processed', null, messageId);
     return res.status(200).json({ ok: true, ...result });
   } catch (err) {
     const msg = err?.message || String(err);
-    await logWebhookEvent(eventType, payload, 'error', msg);
-    // Return 200 to prevent Bookeo from retry-bombing us while we debug.
-    // We can see the error in the webhook_events table.
+    await logWebhookEvent(eventType, payload, 'error', msg, messageId);
+    // Return 200 so Bookeo doesn't retry-bomb while we debug
     return res.status(200).json({ ok: false, error: msg });
   }
 }
