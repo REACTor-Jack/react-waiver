@@ -849,10 +849,275 @@ function WaiversTab() {
 }
 
 // ============================================================
+// NEEDS REVIEW TAB
+// Shows waivers flagged by the agent (flagged_for_review = true).
+// For each: signer info, suggested booking, agent's confidence + reasoning.
+// Staff can confirm the suggestion (link with method='staff_manual')
+// or reject it (clear suggestion, leave waiver unlinked).
+// ============================================================
+function NeedsReviewTab() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [actingOn, setActingOn] = useState(null); // waiver id being processed
+
+  useEffect(() => {
+    fetchFlagged();
+  }, []);
+
+  const fetchFlagged = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      // 1. Get all flagged waivers
+      const { data: waivers, error: wErr } = await supabase
+        .from('waivers_v2')
+        .select('id, customer_id, suggested_booking_id, agent_processed_at, created_at, agreed_at')
+        .eq('flagged_for_review', true)
+        .order('created_at', { ascending: false });
+      if (wErr) throw wErr;
+      if (!waivers || waivers.length === 0) {
+        setItems([]);
+        return;
+      }
+
+      // 2. Bulk-fetch the signer customers
+      const customerIds = [...new Set(waivers.map((w) => w.customer_id).filter(Boolean))];
+      let customers = [];
+      if (customerIds.length > 0) {
+        const { data: cData } = await supabase
+          .from('customers')
+          .select('id, full_name, email, phone, date_of_birth')
+          .in('id', customerIds);
+        customers = cData || [];
+      }
+      const customerById = new Map(customers.map((c) => [c.id, c]));
+
+      // 3. Bulk-fetch the suggested bookings
+      const bookingIds = [...new Set(waivers.map((w) => w.suggested_booking_id).filter(Boolean))];
+      let bookings = [];
+      if (bookingIds.length > 0) {
+        const { data: bData } = await supabase
+          .from('bookeo_bookings')
+          .select('id, room_name, booked_for, primary_contact_customer_id')
+          .in('id', bookingIds);
+        bookings = bData || [];
+      }
+      const bookingById = new Map(bookings.map((b) => [b.id, b]));
+
+      // 4. Bulk-fetch the booking primary contacts (so we can show "agent thinks this matches Sara Suarez")
+      const contactIds = [...new Set(bookings.map((b) => b.primary_contact_customer_id).filter(Boolean))];
+      let contacts = [];
+      if (contactIds.length > 0) {
+        const { data: ctData } = await supabase
+          .from('customers')
+          .select('id, full_name, email')
+          .in('id', contactIds);
+        contacts = ctData || [];
+      }
+      const contactById = new Map(contacts.map((c) => [c.id, c]));
+
+      // 5. Bulk-fetch the latest agent decision for each waiver (for reasoning + confidence)
+      const waiverIds = waivers.map((w) => w.id);
+      let decisions = [];
+      if (waiverIds.length > 0) {
+        const { data: dData } = await supabase
+          .from('agent_decisions')
+          .select('subject_id, confidence, reasoning, candidates, created_at')
+          .in('subject_id', waiverIds)
+          .eq('agent_name', 'waiver_linker')
+          .order('created_at', { ascending: false });
+        decisions = dData || [];
+      }
+      // Keep only the most recent decision per waiver
+      const latestDecision = new Map();
+      for (const d of decisions) {
+        if (!latestDecision.has(d.subject_id)) latestDecision.set(d.subject_id, d);
+      }
+
+      // 6. Compose
+      const composed = waivers.map((w) => ({
+        waiver: w,
+        signer: customerById.get(w.customer_id) || null,
+        booking: bookingById.get(w.suggested_booking_id) || null,
+        bookingContact: bookingById.get(w.suggested_booking_id)
+          ? contactById.get(bookingById.get(w.suggested_booking_id).primary_contact_customer_id) || null
+          : null,
+        decision: latestDecision.get(w.id) || null,
+      }));
+      setItems(composed);
+    } catch (err) {
+      setError('Failed to load flagged waivers: ' + (err.message || String(err)));
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmLink = async (item) => {
+    if (!item.booking) return;
+    setActingOn(item.waiver.id);
+    try {
+      const { error: uErr } = await supabase
+        .from('waivers_v2')
+        .update({
+          booking_id: item.booking.id,
+          booking_link_method: 'staff_manual',
+          flagged_for_review: false,
+          suggested_booking_id: null,
+        })
+        .eq('id', item.waiver.id);
+      if (uErr) throw uErr;
+      // Optimistic remove from list
+      setItems((prev) => prev.filter((x) => x.waiver.id !== item.waiver.id));
+    } catch (err) {
+      setError('Confirm failed: ' + (err.message || String(err)));
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const rejectSuggestion = async (item) => {
+    setActingOn(item.waiver.id);
+    try {
+      const { error: uErr } = await supabase
+        .from('waivers_v2')
+        .update({
+          flagged_for_review: false,
+          suggested_booking_id: null,
+          // booking_link_method stays as 'unlinked'
+        })
+        .eq('id', item.waiver.id);
+      if (uErr) throw uErr;
+      setItems((prev) => prev.filter((x) => x.waiver.id !== item.waiver.id));
+    } catch (err) {
+      setError('Reject failed: ' + (err.message || String(err)));
+    } finally {
+      setActingOn(null);
+    }
+  };
+
+  const formatDate = (d) => {
+    if (!d) return '—';
+    return new Date(d).toLocaleString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    });
+  };
+
+  const formatPct = (n) => {
+    if (n == null) return '—';
+    return Math.round(Number(n) * 100) + '%';
+  };
+
+  return (
+    <div>
+      <div style={admin.tabHeader}>
+        <p style={admin.tabCount}>
+          {items.length} waiver{items.length !== 1 ? 's' : ''} need review
+        </p>
+        <button onClick={fetchFlagged} style={admin.refreshBtn}>↻ Refresh</button>
+      </div>
+
+      {loading && <p style={admin.statusText}>Loading...</p>}
+      {error && <p style={styles.error}>{error}</p>}
+
+      {!loading && !error && items.length === 0 && (
+        <div style={review.emptyWrap}>
+          <div style={review.emptyIcon}>✓</div>
+          <p style={review.emptyTitle}>All caught up</p>
+          <p style={review.emptySub}>No waivers are flagged for review right now. The agent will queue items here when it's not confident enough to auto-link.</p>
+        </div>
+      )}
+
+      {!loading && items.length > 0 && (
+        <div style={review.list}>
+          {items.map((item) => (
+            <div key={item.waiver.id} style={review.card}>
+              <div style={review.cardHeader}>
+                <div>
+                  <p style={review.signerName}>
+                    {item.signer?.full_name || '(no signer name)'}
+                  </p>
+                  <p style={review.signerMeta}>
+                    {item.signer?.email || 'no email'}
+                    {item.signer?.date_of_birth && ' · DOB ' + item.signer.date_of_birth.substring(0, 7)}
+                  </p>
+                  <p style={review.signerMeta}>
+                    Signed {formatDate(item.waiver.agreed_at)}
+                  </p>
+                </div>
+                <div style={review.confidenceBadge}>
+                  <span style={review.confidenceLabel}>Agent confidence</span>
+                  <span style={review.confidenceValue}>{formatPct(item.decision?.confidence)}</span>
+                </div>
+              </div>
+
+              <div style={review.suggestionBox}>
+                <p style={review.suggestionLabel}>Agent suggests this booking:</p>
+                {item.booking ? (
+                  <>
+                    <p style={review.bookingName}>
+                      {item.booking.room_name || '(no room name)'}
+                    </p>
+                    <p style={review.bookingMeta}>
+                      {formatDate(item.booking.booked_for)}
+                    </p>
+                    {item.bookingContact && (
+                      <p style={review.bookingMeta}>
+                        Booked by: {item.bookingContact.full_name || '?'} · {item.bookingContact.email || 'no email'}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p style={review.bookingMeta}>(suggested booking not found)</p>
+                )}
+              </div>
+
+              {item.decision?.reasoning && (
+                <p style={review.reasoning}>
+                  <strong>Why:</strong> {item.decision.reasoning}
+                </p>
+              )}
+
+              <div style={review.actions}>
+                <button
+                  onClick={() => confirmLink(item)}
+                  disabled={actingOn === item.waiver.id || !item.booking}
+                  style={{
+                    ...review.confirmBtn,
+                    opacity: (actingOn === item.waiver.id || !item.booking) ? 0.5 : 1,
+                    cursor: (actingOn === item.waiver.id || !item.booking) ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  ✓ Confirm Link
+                </button>
+                <button
+                  onClick={() => rejectSuggestion(item)}
+                  disabled={actingOn === item.waiver.id}
+                  style={{
+                    ...review.rejectBtn,
+                    opacity: actingOn === item.waiver.id ? 0.5 : 1,
+                    cursor: actingOn === item.waiver.id ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  ✗ Reject
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // ADMIN DASHBOARD — tabbed layout
 // ============================================================
 
 const TABS = [
+  { id: 'needs_review', label: 'Needs Review' },
   { id: 'waivers', label: 'Waivers (Legacy)' },
   { id: 'customers', label: 'Customers' },
   { id: 'bookings', label: 'Bookings' },
@@ -861,6 +1126,7 @@ const TABS = [
   { id: 'group_photos', label: 'Group Photos' },
   { id: 'webhook_events', label: 'Webhook Log' },
   { id: 'customer_update_log', label: 'Update Log' },
+  { id: 'agent_decisions', label: 'Agent Log' },
 ];
 
 const TAB_CONFIGS = {
@@ -949,12 +1215,27 @@ const TAB_CONFIGS = {
       { key: 'changed_via', label: 'Via' },
     ],
   },
+  agent_decisions: {
+    tableName: 'agent_decisions',
+    searchFields: ['decision', 'agent_name'],
+    columns: [
+      { key: 'created_at', label: 'When', type: 'date' },
+      { key: 'agent_name', label: 'Agent' },
+      { key: 'decision', label: 'Decision' },
+      { key: 'confidence', label: 'Confidence' },
+      { key: 'subject_id', label: 'Waiver ID' },
+      { key: 'chosen_target_id', label: 'Linked To' },
+      { key: 'duration_ms', label: 'ms' },
+      { key: 'reasoning', label: 'Reasoning' },
+    ],
+  },
 };
 
 function AdminDashboard({ onLogout }) {
-  const [activeTab, setActiveTab] = useState('waivers_v2');
+  const [activeTab, setActiveTab] = useState('needs_review');
 
   const renderTab = () => {
+    if (activeTab === 'needs_review') return <NeedsReviewTab />;
     if (activeTab === 'waivers') return <WaiversTab />;
     const config = TAB_CONFIGS[activeTab];
     if (!config) return null;
@@ -1463,4 +1744,152 @@ const admin = {
   },
 };
 
-// redeploy trigger — phase 3
+// ============================================================
+// STYLES — Needs Review tab
+// ============================================================
+const review = {
+  list: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '14px',
+  },
+  card: {
+    background: '#0a1520',
+    border: '1px solid #1a2a3a',
+    borderRadius: '10px',
+    padding: '18px 20px',
+  },
+  cardHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: '14px',
+    gap: '16px',
+  },
+  signerName: {
+    color: '#e0e8f0',
+    fontSize: '17px',
+    fontWeight: '700',
+    margin: '0 0 4px',
+  },
+  signerMeta: {
+    color: '#7a8a9a',
+    fontSize: '13px',
+    margin: '0 0 2px',
+  },
+  confidenceBadge: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    borderRadius: '8px',
+    padding: '8px 14px',
+    minWidth: '110px',
+  },
+  confidenceLabel: {
+    color: '#5a7a9a',
+    fontSize: '10px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+  },
+  confidenceValue: {
+    color: '#00bfff',
+    fontSize: '20px',
+    fontWeight: '700',
+    marginTop: '2px',
+  },
+  suggestionBox: {
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    borderRadius: '8px',
+    padding: '14px 16px',
+    marginBottom: '12px',
+  },
+  suggestionLabel: {
+    color: '#5a7a9a',
+    fontSize: '11px',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    margin: '0 0 8px',
+  },
+  bookingName: {
+    color: '#e0e8f0',
+    fontSize: '15px',
+    fontWeight: '600',
+    margin: '0 0 4px',
+  },
+  bookingMeta: {
+    color: '#8090a0',
+    fontSize: '13px',
+    margin: '0 0 2px',
+  },
+  reasoning: {
+    color: '#7a8a9a',
+    fontSize: '12px',
+    lineHeight: '1.5',
+    margin: '0 0 14px',
+    fontStyle: 'italic',
+  },
+  actions: {
+    display: 'flex',
+    gap: '10px',
+  },
+  confirmBtn: {
+    flex: 1,
+    background: 'linear-gradient(135deg, #0066cc, #00bfff)',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '8px',
+    padding: '12px',
+    fontSize: '14px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    letterSpacing: '0.3px',
+  },
+  rejectBtn: {
+    flex: 1,
+    background: 'transparent',
+    color: '#8a6a6a',
+    border: '1px solid #4a3a3a',
+    borderRadius: '8px',
+    padding: '12px',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+  },
+  emptyWrap: {
+    textAlign: 'center',
+    padding: '60px 20px',
+  },
+  emptyIcon: {
+    width: '60px',
+    height: '60px',
+    borderRadius: '50%',
+    background: '#0d1b2a',
+    border: '1px solid #1a3a5c',
+    color: '#00bfff',
+    fontSize: '28px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: '0 auto 16px',
+  },
+  emptyTitle: {
+    color: '#c0d0e0',
+    fontSize: '17px',
+    fontWeight: '600',
+    margin: '0 0 6px',
+  },
+  emptySub: {
+    color: '#5a7a9a',
+    fontSize: '13px',
+    margin: 0,
+    maxWidth: '420px',
+    marginLeft: 'auto',
+    marginRight: 'auto',
+    lineHeight: '1.5',
+  },
+};
+
+// redeploy trigger — phase 3 + needs review
